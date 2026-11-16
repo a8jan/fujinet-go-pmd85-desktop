@@ -1,0 +1,986 @@
+/*
+ * Desktop host for the GPMD85Emulator machine core -- see pmd85_host.h.
+ *
+ * What this replaces, from the GPMD85Emulator application:
+ *
+ *   TEmulator      SetComputerModel/ProcessSettings/Connect*: PmdMachine::Build
+ *                  CpuTimerCallback + BaseTimerCallback:      PmdMachine::RunFrame
+ *   ScreenPMD85    FillBuffer + the palette/colour profiles:  PmdMachine::Render
+ *   SoundDriver    the speaker/tape/MIF 85 mixer:             PmdMixer
+ *   Joy4004482     reading the joystick into the GPIO ports:  PmdJoystick
+ *
+ * with the same machine wiring (devices, ports and signal connections) as
+ * upstream's Emulator.cpp, so a staged tree from a newer GPMD85Emulator keeps
+ * working as long as the chip classes keep their interfaces.
+ *
+ * Copyright (C) 2006-2026 Roman Borik, Martin Borik (the logic ported here)
+ * Copyright (C) 2026 FujiNet Go contributors
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+#include "pmd85_host.h"
+#include "pmd85_host_internal.h"
+
+#include <atomic>
+#include <cstdarg>
+#include <cstdio>
+#include <cstring>
+#include <mutex>
+#include <condition_variable>
+#include <chrono>
+#include <vector>
+
+#include "CommonUtils.h"
+#include "ChipCpu8080P.h"
+#include "ChipMemory12.h"
+#include "ChipMemory2A.h"
+#include "ChipMemory2AEx.h"
+#include "ChipMemory3.h"
+#include "ChipMemory3Ex.h"
+#include "ChipMemoryC2717.h"
+#include "ChipMemoryMato.h"
+#include "SystemPIO.h"
+#include "IifTimer.h"
+#include "IifTape.h"
+#include "IifTapePMD85.h"
+#include "IifTapeMato.h"
+#include "IifGPIO.h"
+#include "Mif85.h"
+#include "Pmd32.h"
+#include "RomModule.h"
+#include "RomMegaModule.h"
+
+#include "pmd85_becker.h"
+
+/* ---- log ------------------------------------------------------------------- */
+
+static Pmd85LogSink g_log_sink = nullptr;
+static void *g_log_user = nullptr;
+static char g_last_error[512];
+
+void pmd85host_set_log_sink(Pmd85LogSink sink, void *user)
+{
+    g_log_sink = sink;
+    g_log_user = user;
+}
+
+static void host_log(int level, const char *fmt, ...)
+{
+    char msg[512];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(msg, sizeof msg, fmt, ap);
+    va_end(ap);
+    if (level >= 2)
+        snprintf(g_last_error, sizeof g_last_error, "%s", msg);
+    if (g_log_sink) {
+        g_log_sink(level, msg, g_log_user);
+    } else {
+        static const char *const tag[] = { "info", "warning", "error" };
+        fprintf(stderr, "pmd85host: %s: %s\n",
+                tag[level < 0 ? 0 : (level > 2 ? 2 : level)], msg);
+    }
+}
+
+const char *pmd85host_last_error(void) { return g_last_error; }
+
+/* ---- frame sink -------------------------------------------------------------- */
+
+static Pmd85FrameSink g_frame_sink = nullptr;
+static void *g_frame_user = nullptr;
+
+void pmd85host_set_frame_sink(Pmd85FrameSink sink, void *user)
+{
+    g_frame_sink = sink;
+    g_frame_user = user;
+}
+
+/* ---- audio ring ----------------------------------------------------------- */
+
+#define AUDIO_RING_SAMPLES (PMD85HOST_AUDIO_RATE * 2 / 4)  /* 250 ms stereo */
+static std::mutex g_audio_mtx;
+static std::condition_variable g_audio_cv;
+static int16_t g_audio_ring[AUDIO_RING_SAMPLES];
+static size_t g_audio_head, g_audio_tail, g_audio_count;
+static std::atomic<int> g_audio_active{1};
+
+static void push_audio(const int16_t *interleaved, int nframes)
+{
+    std::lock_guard<std::mutex> lk(g_audio_mtx);
+    for (int i = 0; i < nframes * 2; i++) {
+        if (g_audio_count >= AUDIO_RING_SAMPLES) {
+            /* overflow: drop the oldest to keep latency bounded */
+            g_audio_head = (g_audio_head + 1) % AUDIO_RING_SAMPLES;
+            g_audio_count--;
+        }
+        g_audio_ring[g_audio_tail] = interleaved[i];
+        g_audio_tail = (g_audio_tail + 1) % AUDIO_RING_SAMPLES;
+        g_audio_count++;
+    }
+    g_audio_cv.notify_all();
+}
+
+int pmd85host_fill_audio(int16_t *out, int max_samples)
+{
+    if (!out || max_samples <= 0) return 0;
+    std::unique_lock<std::mutex> lk(g_audio_mtx);
+    g_audio_cv.wait_for(lk, std::chrono::milliseconds(50), [&] {
+        return !g_audio_active.load() || g_audio_count >= (size_t)max_samples;
+    });
+    int produced = 0;
+    while (produced < max_samples && g_audio_count > 0) {
+        out[produced++] = g_audio_ring[g_audio_head];
+        g_audio_head = (g_audio_head + 1) % AUDIO_RING_SAMPLES;
+        g_audio_count--;
+    }
+    lk.unlock();
+    for (int i = produced; i < max_samples; i++) out[i] = 0;
+    return max_samples;
+}
+
+void pmd85host_audio_set_active(int active)
+{
+    std::lock_guard<std::mutex> lk(g_audio_mtx);
+    g_audio_active.store(active ? 1 : 0);
+    g_audio_cv.notify_all();
+}
+
+void pmd85host_clear_audio(void)
+{
+    std::lock_guard<std::mutex> lk(g_audio_mtx);
+    g_audio_head = g_audio_tail = g_audio_count = 0;
+    g_audio_cv.notify_all();
+}
+
+/* ---- key queue ------------------------------------------------------------ */
+
+struct KeyEvent { int down; int usage; };
+static std::mutex g_key_mtx;
+static std::vector<KeyEvent> g_key_queue;
+static uint8_t g_key_held_ui[256];   /* what the UI side believes is down */
+
+void pmd85host_inject_key(int down, int usage)
+{
+    if (usage <= 0 || usage > 255) return;
+    std::lock_guard<std::mutex> lk(g_key_mtx);
+    g_key_held_ui[usage] = down ? 1 : 0;
+    if (g_key_queue.size() < 1024)
+        g_key_queue.push_back({ down ? 1 : 0, usage });
+}
+
+void pmd85host_release_all_keys(void)
+{
+    std::lock_guard<std::mutex> lk(g_key_mtx);
+    for (int u = 1; u < 256; u++) {
+        if (g_key_held_ui[u]) {
+            g_key_held_ui[u] = 0;
+            g_key_queue.push_back({ 0, u });
+        }
+    }
+}
+
+int pmd85host_drain_keys(void (*sink)(int down, int usage))
+{
+    std::vector<KeyEvent> now, later;
+    {
+        std::lock_guard<std::mutex> lk(g_key_mtx);
+        now.swap(g_key_queue);
+    }
+    uint8_t pressed[256] = { 0 };
+    int delivered = 0;
+    for (size_t i = 0; i < now.size(); i++) {
+        const KeyEvent &e = now[i];
+        if (!e.down && pressed[e.usage]) {
+            /* pressed in this same drain: keep the release for the next frame
+             * so the machine's keyboard scan sees the key at least once --
+             * and everything after it too, to keep the order */
+            later.assign(now.begin() + (long)i, now.end());
+            break;
+        }
+        if (e.down) pressed[e.usage] = 1;
+        sink(e.down, e.usage);
+        delivered++;
+    }
+    if (!later.empty()) {
+        std::lock_guard<std::mutex> lk(g_key_mtx);
+        later.insert(later.end(), g_key_queue.begin(), g_key_queue.end());
+        g_key_queue.swap(later);
+    }
+    return delivered;
+}
+
+/* ---- joystick / state atomics --------------------------------------------- */
+
+static std::atomic<unsigned> g_joy[2];
+static std::atomic<int> g_led{0};
+static std::atomic<int> g_mega_page{-1};
+
+void pmd85host_set_joystick(int port, unsigned bits)
+{
+    if (port == 0 || port == 1) g_joy[port].store(bits & 0x1F);
+}
+
+int pmd85host_led_state(void) { return g_led.load(std::memory_order_relaxed); }
+int pmd85host_mega_page(void) { return g_mega_page.load(std::memory_order_relaxed); }
+
+/* ---- pending commands (UI -> emulator thread) ------------------------------ */
+
+static std::mutex g_cmd_mtx;
+static std::atomic<int> g_cmd_color{-1};
+static bool g_cmd_reset;
+static bool g_cmd_reconfig;
+static pmd85host_config g_cmd_config;
+
+void pmd85host_core_reset(void)
+{
+    std::lock_guard<std::mutex> lk(g_cmd_mtx);
+    g_cmd_reset = true;
+}
+
+void pmd85host_set_color_profile(int profile)
+{
+    if (profile >= 0 && profile < PMD85_COLOR_COUNT)
+        g_cmd_color.store(profile);
+}
+
+void pmd85host_core_reconfigure(const pmd85host_config *cfg)
+{
+    if (!cfg) return;
+    std::lock_guard<std::mutex> lk(g_cmd_mtx);
+    g_cmd_config = *cfg;
+    g_cmd_reconfig = true;
+}
+
+/* ---- config defaults ------------------------------------------------------- */
+
+void pmd85host_config_defaults(pmd85host_config *c)
+{
+    memset(c, 0, sizeof *c);
+    c->model = PMD85_MODEL_2A;
+    c->rom_module = PMD85_ROMMOD_NONE;
+    c->becker_port = 65505;
+    snprintf(c->becker_host, sizeof c->becker_host, "127.0.0.1");
+    c->color_profile = PMD85_COLOR_STANDARD;
+    /* upstream's default "rgb" palette for CP_COLOR */
+    c->attr[0] = LIME;
+    c->attr[1] = RED;
+    c->attr[2] = BLUE;
+    c->attr[3] = FUCHSIA;
+    c->volume = 96;
+    c->exchange_zy = 1;
+    c->numpad = 1;
+    c->mato_ctrl = 1;
+}
+
+/* ---- debugger hook ---------------------------------------------------------- */
+
+static Pmd85InstrHook g_instr_hook = nullptr;
+static void *g_instr_hook_ctx = nullptr;
+
+void pmd85host_set_instr_hook(Pmd85InstrHook hook, void *ctx)
+{
+    g_instr_hook_ctx = ctx;
+    g_instr_hook = hook;
+}
+
+/* ======================================================================== */
+/* The mixer: SoundDriver without SDL                                       */
+/* ======================================================================== */
+
+/* Upstream's SoundDriver, keeping its sample placement and fade-out exactly
+ * (the PMD's beeper and tape signals are square waves whose edges land at the
+ * T-state they happened; the fade-out stops a held level from turning into a
+ * DC offset), but writing S16 into the host's ring instead of queueing U8 to
+ * SDL. */
+class PmdMixer
+{
+public:
+    explicit PmdMixer(int volume) : mif85(false) { SetVolume(volume); Clear(); }
+
+    void SetVolume(int vol)
+    {
+        totalVolume = vol & 0x7F;
+        channelVolume = totalVolume / AUDIO_BEEP_CHANNELS;
+        if (channelVolume == 0 && totalVolume > 0)
+            channelVolume = 1;
+        channelFadeout = channelVolume == 0 ? FADEOUT_RATE
+                                            : FADEOUT_RATE / channelVolume;
+    }
+
+    void EnableMIF85(bool on) { mif85 = on; }
+
+    void Clear()
+    {
+        for (int c = 0; c < AUDIO_BEEP_CHANNELS; c++) {
+            memset(&ch[c], 0, sizeof ch[c]);
+        }
+    }
+
+    /* upstream SoundDriver::PrepareSample, connected to the beeper (SystemPIO)
+     * and tape (IifTape) PrepareSample signals */
+    void PrepareSample(int chn, bool state, int ticks)
+    {
+        if (chn < 0 || chn >= AUDIO_BEEP_CHANNELS) return;
+        Channel &c = ch[chn];
+        int val = state ? channelVolume : -channelVolume;
+        if (c.oldVal == val)
+            return;
+
+        int curPos = (int)(((long long)ticks * SAMPS_PER_CPU_FRAME) / TCYCLES_PER_FRAME);
+        for (int i = c.fillPos; i < curPos && i < SAMPS_PER_CPU_FRAME; i++)
+            c.buf[i] = Fadeout(c);
+        if (curPos >= 0 && curPos < SAMPS_PER_CPU_FRAME)
+            c.buf[curPos] = (int8_t)val;
+
+        c.fillPos = curPos + 1;
+        c.curVal = val;
+        c.oldVal = val;
+    }
+
+    /* upstream SoundDriver::PrepareBuffer: finish the frame, mix, push */
+    void EndFrame()
+    {
+        int16_t out[SAMPS_PER_CPU_FRAME * 2];
+        uint8_t saa[SAMPS_PER_CPU_FRAME * 2];
+        bool haveSaa = mif85 && SAA1099 != nullptr;
+
+        for (int c = 0; c < AUDIO_BEEP_CHANNELS; c++) {
+            for (int i = ch[c].fillPos; i < SAMPS_PER_CPU_FRAME; i++)
+                ch[c].buf[i] = Fadeout(ch[c]);
+            ch[c].fillPos = 0;
+        }
+        if (haveSaa)
+            SAA1099->GenerateMany(saa, SAMPS_PER_CPU_FRAME);
+
+        for (int i = 0; i < SAMPS_PER_CPU_FRAME; i++) {
+            /* SDL_MixAudioFormat scales by volume/128 */
+            int beep = (ch[0].buf[i] + ch[1].buf[i]) * totalVolume / 128;
+            int l = beep, r = beep;
+            if (haveSaa) {
+                l += ((int)saa[i * 2] - 128) * totalVolume / 128;
+                r += ((int)saa[i * 2 + 1] - 128) * totalVolume / 128;
+            }
+            if (l > 127) l = 127;
+            if (l < -128) l = -128;
+            if (r > 127) r = 127;
+            if (r < -128) r = -128;
+            out[i * 2] = (int16_t)(l * 256);
+            out[i * 2 + 1] = (int16_t)(r * 256);
+        }
+        push_audio(out, SAMPS_PER_CPU_FRAME);
+    }
+
+private:
+    struct Channel {
+        int8_t buf[SAMPS_PER_CPU_FRAME];
+        int curVal, oldVal, fillPos, tick;
+    };
+
+    int8_t Fadeout(Channel &c)
+    {
+        c.tick += SAMPLE_TICK_INC;
+        if (c.tick >= channelFadeout) {
+            c.tick -= channelFadeout;
+            if (c.curVal > 0) c.curVal--;
+            else if (c.curVal < 0) c.curVal++;
+        }
+        return (int8_t)c.curVal;
+    }
+
+    Channel ch[AUDIO_BEEP_CHANNELS];
+    int totalVolume, channelVolume, channelFadeout;
+    bool mif85;
+};
+
+/* ======================================================================== */
+/* The joystick: Joy4004482's GPIO side                                     */
+/* ======================================================================== */
+
+/* The 4004/482 interface puts the stick on a GPIO port, active low, and is
+ * read when the CPU reads the port with the strobe in port C set. */
+class PmdJoystick
+{
+public:
+    PmdJoystick(IifGPIO *p, bool a, bool b) : pio(p), onA(a), onB(b)
+    {
+        if (onA) pio->OnCpuReadA.connect(&PmdJoystick::ReadA, this);
+        if (onB) pio->OnCpuReadB.connect(&PmdJoystick::ReadB, this);
+    }
+    ~PmdJoystick()
+    {
+        pio->OnCpuReadA.disconnect(this);
+        pio->OnCpuReadB.disconnect(this);
+    }
+    void ReadA()
+    {
+        BYTE v = 0xFF;
+        if (pio->ReadByte(PP_PortC) & 0x10) v = (BYTE)~g_joy[0].load();
+        pio->WriteByte(PP_PortA, v);
+    }
+    void ReadB()
+    {
+        BYTE v = 0xFF;
+        if (pio->ReadByte(PP_PortC) & 0x01) v = (BYTE)~g_joy[1].load();
+        pio->WriteByte(PP_PortB, v);
+    }
+
+private:
+    IifGPIO *pio;
+    bool onA, onB;
+};
+
+/* ======================================================================== */
+/* The machine                                                              */
+/* ======================================================================== */
+
+static const DWORD k_palette[16] = {
+    /* ScreenPMD85::InitPalette, as XRGB8888 */
+    0x000000, 0xA00000, 0x00A000, 0xA0A000, 0x0000A0, 0xA000A0, 0x00A0A0, 0xA0A0A0,
+    0xBFBFBF, 0xFF5050, 0x50FF50, 0xFFFF50, 0x5050FF, 0xFF50FF, 0x50FFFF, 0xFFFFFF,
+};
+
+class PmdMachine
+{
+public:
+    explicit PmdMachine(const pmd85host_config &c);
+    ~PmdMachine();
+
+    bool ok() const { return built; }
+    void RunFrame();
+    void SetColorProfile(int profile) { cfg.color_profile = profile; SetColors(); }
+    void Reset() { cpu->DoReset(); }
+
+    /* the keyboard state the SystemPIO scan reads (SDL_NUM_SCANCODES wide) */
+    BYTE keyBuffer[SDL_NUM_SCANCODES];
+
+    pmd85host_config cfg;
+    TComputerModel model;
+    ChipCpu8080 *cpu;
+    ChipMemory *memory;
+    SystemPIO *systemPIO;
+    IifTimer *ifTimer;
+    IifTape *ifTape;
+    IifGPIO *ifGpio;
+    Mif85 *mif85;
+    Pmd32 *pmd32;
+    RomModule *romModule;
+    RomMegaModule *megaModule;
+    PmdBecker *becker;
+    PmdJoystick *joystick;
+    PmdMixer mixer;
+
+    bool width384;
+    bool blinkState;
+    int blinkFrames;
+    uint64_t frames;
+    uint32_t fb[PMD85HOST_FB_WIDTH_MAX * PMD85HOST_FB_HEIGHT];
+
+private:
+    bool built;
+    BYTE pAttr[8];
+    bool blinkingEnabled;
+
+    bool Build();
+    void SetColors();
+    void Render();
+    void InsertRomPack();
+    void InsertMegaModule();
+};
+
+PmdMachine::PmdMachine(const pmd85host_config &c)
+    : cfg(c), model((TComputerModel)c.model), cpu(nullptr), memory(nullptr),
+      systemPIO(nullptr), ifTimer(nullptr), ifTape(nullptr), ifGpio(nullptr),
+      mif85(nullptr), pmd32(nullptr), romModule(nullptr), megaModule(nullptr),
+      becker(nullptr), joystick(nullptr), mixer(c.volume), width384(false),
+      blinkState(false), blinkFrames(0), frames(0), built(false),
+      blinkingEnabled(false)
+{
+    memset(keyBuffer, 0, sizeof keyBuffer);
+    memset(fb, 0, sizeof fb);
+    memset(pAttr, 0, sizeof pAttr);
+    if (model < CM_V1 || model > CM_LAST) model = CM_V2A;
+    built = Build();
+}
+
+PmdMachine::~PmdMachine()
+{
+    /* the reverse of Build, mirroring TEmulator's destructor order */
+    delete joystick;
+    delete pmd32;  /* before ifGpio, whose signals it is connected to */
+    if (ifTimer) ifTimer->EnableMIF85(false, nullptr);
+    delete mif85;
+    delete becker;
+    delete romModule;  /* megaModule is the same object when present */
+    delete cpu;
+    delete systemPIO;
+    delete ifTimer;
+    if (ifTape) {
+        if (ifTape->GetModel() == CM_MATO)
+            delete (IifTapeMato *)ifTape;
+        else
+            delete (IifTapePMD85 *)ifTape;
+    }
+    delete ifGpio;
+    delete memory;
+}
+
+bool PmdMachine::Build()
+{
+    /* ---- TEmulator::SetComputerModel ---- */
+    TTapeIfType tapeIfType = TIT_V1;
+    if (model == CM_V1 || model == CM_ALFA)
+        tapeIfType = TIT_V1;
+    else if (model < CM_MATO || model == CM_ALFA2 || model == CM_C2717)
+        tapeIfType = TIT_V2;
+
+    std::vector<BYTE> romBuff(16 * KB, 0xFF);
+    int fileSize = cfg.monitor[0] ? ReadFromFile(cfg.monitor, 0, 16 * KB, romBuff.data()) : -1;
+    if (fileSize <= 0) {
+        host_log(2, "cannot read the monitor ROM \"%s\"", cfg.monitor);
+        return false;
+    }
+
+    fileSize = (fileSize + KB - 1) & ~(KB - 1);
+    BYTE romSize = (BYTE)(fileSize / KB);
+    if (romSize < 4) romSize = 4;
+    if (romSize > 16) romSize = 16;
+
+    switch (model) {
+    case CM_V1:
+    case CM_ALFA:
+    case CM_ALFA2:
+    case CM_V2:
+        memory = new ChipMemory12(romSize);
+        break;
+    case CM_V2A:
+        memory = cfg.ram256k ? (ChipMemory *)new ChipMemory2AEx(romSize)
+                             : (ChipMemory *)new ChipMemory2A(romSize);
+        break;
+    case CM_V3:
+        romSize = 8;
+        memory = cfg.ram256k ? (ChipMemory *)new ChipMemory3Ex(romSize)
+                             : (ChipMemory *)new ChipMemory3(romSize);
+        break;
+    case CM_MATO:
+        romSize = 16;
+        memory = new ChipMemoryMato(romSize, cfg.mato_allram64k != 0);
+        break;
+    case CM_C2717:
+        romSize = 16;
+        memory = new ChipMemoryC2717(romSize);
+        memory->SetRemapped(true);
+        break;
+    default:
+        return false;
+    }
+
+    if (model <= CM_V2A)
+        memory->SetSplit8k(cfg.split8k != 0);
+
+    cpu = new ChipCpu8080P(memory);
+
+    systemPIO = new SystemPIO(model, memory);
+    systemPIO->PrepareSample.connect(&PmdMixer::PrepareSample, &mixer);
+    cpu->AddDevice(SYSTEM_PIO_ADR, SYSTEM_PIO_MASK, systemPIO, true);
+
+    if (model != CM_MATO) {
+        cpu->TCyclesListeners.connect(&SystemPIO::SoundService, systemPIO);
+
+        ifGpio = new IifGPIO();
+        cpu->AddDevice(IIF_GPIO_ADR, IIF_GPIO_MASK, ifGpio, true);
+
+        ifTimer = new IifTimer(model, cpu);
+        cpu->AddDevice(IIF_TIMER_ADR, IIF_TIMER_MASK, ifTimer, false);
+        cpu->TCyclesListeners.connect(&IifTimer::ITimerService, ifTimer);
+    }
+
+    if (model == CM_MATO)
+        ifTape = new IifTapeMato(systemPIO);
+    else
+        ifTape = new IifTapePMD85(model, tapeIfType);
+    ifTape->PrepareSample.connect(&PmdMixer::PrepareSample, &mixer);
+
+    if (model != CM_MATO) {
+        PeripheralDevice *tapeDevice = dynamic_cast<PeripheralDevice *>((IifTapePMD85 *)ifTape);
+        if (model == CM_ALFA || model == CM_ALFA2)
+            cpu->AddDevice(IIF_TAPE_ADR_A, IIF_TAPE_MASK_A, tapeDevice, true);
+        else
+            cpu->AddDevice(IIF_TAPE_ADR, IIF_TAPE_MASK, tapeDevice, true);
+    }
+
+    if (model == CM_MATO) {
+        cpu->TCyclesListeners.connect(&IifTapeMato::TapeClockService, (IifTapeMato *)ifTape);
+    } else {
+        IifTapePMD85 *tapeDevice = (IifTapePMD85 *)ifTape;
+        if (model != CM_V1 && model != CM_ALFA) {
+            int cnt = (model == CM_C2717) ? 0 : 1;
+            ifTimer->Counters[cnt].OnOutChange.connect(&IifTapePMD85::TapeClockService23, tapeDevice);
+        }
+        cpu->TCyclesListeners.connect(&IifTapePMD85::TapeClockService123, tapeDevice);
+    }
+
+    if ((model == CM_V2A || model == CM_V3) && cfg.ram256k)
+        cpu->AddDevice(MM256_REG_ADR, MM256_REG_MASK,
+                       dynamic_cast<PeripheralDevice *>(memory), true);
+
+    if (model != CM_C2717)
+        systemPIO->width384 = 1;
+
+    memory->PutRom(romBuff.data(), romSize * KB);
+
+    /* ---- TEmulator::ConnectMIF85 ---- */
+    if (cfg.mif85 && model <= CM_V3) {
+        mif85 = new Mif85();
+        cpu->AddDevice(MIF85_ADR, MIF85_MASK, mif85, true);
+        mixer.EnableMIF85(true);
+        if (ifTimer) ifTimer->EnableMIF85(true, mif85);
+    }
+
+    /* ---- TEmulator::ConnectPMD32 ---- */
+    if (cfg.pmd32 && ifGpio && (model <= CM_V3 || model == CM_C2717)) {
+        pmd32 = new Pmd32(ifGpio);
+        cpu->TCyclesListeners.connect(&Pmd32::Disk32Service, pmd32);
+        if (cfg.pmd32_sdroot[0])
+            pmd32->SetExtraCommands(cfg.pmd32_extra != 0, cfg.pmd32_sdroot);
+        for (int d = 0; d < 4; d++) {
+            if (cfg.pmd32_drive[d][0])
+                pmd32->InsertDisk(DRIVE_A + d, cfg.pmd32_drive[d], cfg.pmd32_wp[d] != 0);
+        }
+    }
+
+    /* ---- the joystick (GPIO 0 is the PMD 32's when that is connected) ---- */
+    if (ifGpio && (cfg.joystick_gpio0 || cfg.joystick_gpio1))
+        joystick = new PmdJoystick(ifGpio, cfg.joystick_gpio0 && !pmd32,
+                                   cfg.joystick_gpio1 != 0);
+
+    /* ---- the ROM module ---- */
+    if (cfg.rom_module == PMD85_ROMMOD_PACK)
+        InsertRomPack();
+    else if (cfg.rom_module == PMD85_ROMMOD_MEGA)
+        InsertMegaModule();
+
+    /* ---- the Becker port ---- */
+    if (cfg.becker) {
+        becker = new PmdBecker(cfg.becker_host, cfg.becker_port);
+        becker->SetMegaModule(megaModule);
+        cpu->AddDevice(PMD85_BECKER_ADR, PMD85_BECKER_MASK, becker, true);
+    }
+
+    /* ---- the keyboard options (TEmulator::ProcessSettings, PS_CONTROLS) ---- */
+    systemPIO->exchZY = cfg.exchange_zy != 0;
+    systemPIO->numpad = cfg.numpad != 0;
+    systemPIO->extMato = cfg.mato_ctrl != 0;
+
+    SetColors();
+    cpu->DoReset();
+    return true;
+}
+
+void PmdMachine::InsertRomPack()
+{
+    /* TEmulator::InsertRomModule */
+    romModule = new RomModule();
+    cpu->AddDevice(ROM_MODULE_ADR, ROM_MODULE_MASK, romModule, true);
+    romModule->RemoveRomPack();
+
+    std::vector<BYTE> buff(ROM_PACK_SIZE);
+    DWORD kBadr = 0;
+    for (int i = 0; i < cfg.rmm_count && i < PMD85HOST_RMM_MAX && kBadr < ROM_PACK_SIZE_KB; i++) {
+        long size = FileSize(cfg.rmm[i]);
+        if (size <= 0) {
+            host_log(1, "ROM module file not found: \"%s\"", cfg.rmm[i]);
+            continue;
+        }
+        int sizeKB = (int)((size + KB - 1) / KB);
+        if (kBadr + sizeKB > ROM_PACK_SIZE_KB)
+            sizeKB = ROM_PACK_SIZE_KB - kBadr;
+        memset(buff.data(), 0xFF, (size_t)sizeKB * KB);
+        if (ReadFromFile(cfg.rmm[i], 0, sizeKB * KB, buff.data()) > 0)
+            romModule->InsertRom((BYTE)kBadr, (BYTE)sizeKB, buff.data());
+        kBadr += sizeKB;
+    }
+}
+
+void PmdMachine::InsertMegaModule()
+{
+    /* TEmulator::InsertRomMegaModule */
+    megaModule = new RomMegaModule();
+    romModule = megaModule;
+    cpu->AddDevice(ROM_MODULE_ADR, ROM_MODULE_MASK, romModule, true);
+    cpu->AddDevice(MEGA_MODULE_ADR, MEGA_MODULE_MASK, romModule, false);
+
+    if (!cfg.mrm[0])
+        return;  /* an empty MegaModule, for FujiNet to fill */
+    long size = FileSize(cfg.mrm);
+    if (size <= 0) {
+        host_log(1, "MegaModule image not found: \"%s\"", cfg.mrm);
+        return;
+    }
+    if (size > 8L * KB * KB) {
+        host_log(1, "MegaModule image too large, truncated: \"%s\"", cfg.mrm);
+        size = 8L * KB * KB;
+    }
+    std::vector<BYTE> buff((size_t)size, 0xFF);
+    if (ReadFromFile(cfg.mrm, 0, (int)size, buff.data()) > 0)
+        megaModule->LoadRom((unsigned)size, buff.data());
+    else
+        host_log(1, "cannot read the MegaModule image \"%s\"", cfg.mrm);
+}
+
+void PmdMachine::SetColors()
+{
+    /* ScreenPMD85::SetColorProfile + SetColorAttr */
+    BYTE cAttr[4];
+    for (int i = 0; i < 4; i++)
+        cAttr[i] = (BYTE)((cfg.attr[i] >= 0 && cfg.attr[i] <= WHITE) ? cfg.attr[i] : WHITE);
+
+    switch (cfg.color_profile) {
+    case PMD85_COLOR_MONO:
+        pAttr[0] = pAttr[1] = pAttr[2] = pAttr[3] = WHITE;
+        blinkingEnabled = false;
+        break;
+    default:
+    case PMD85_COLOR_STANDARD:
+        pAttr[0] = WHITE;
+        pAttr[1] = SILVER;
+        pAttr[2] = WHITE;
+        pAttr[3] = SILVER;
+        blinkingEnabled = true;
+        break;
+    case PMD85_COLOR_COLOR:
+        for (int i = 0; i < 4; i++)
+            pAttr[i] = pAttr[i + 4] = cAttr[i];
+        blinkingEnabled = false;
+        break;
+    case PMD85_COLOR_COLORACE:
+        pAttr[0] = BLACK;
+        pAttr[1] = RED;
+        pAttr[2] = BLUE;
+        pAttr[3] = FUCHSIA;
+        pAttr[4] = LIME;
+        pAttr[5] = YELLOW;
+        pAttr[6] = AQUA;
+        pAttr[7] = WHITE;
+        blinkingEnabled = false;
+        break;
+    }
+}
+
+void PmdMachine::Render()
+{
+    /* ScreenPMD85::FillBuffer, into XRGB8888 */
+    const BYTE *vram = memory->GetVramPointer();
+    if (!vram) return;
+
+    bool colorace = (cfg.color_profile == PMD85_COLOR_COLORACE);
+    BYTE a[4] = { pAttr[0], pAttr[1], pAttr[2], pAttr[3] };
+    if (blinkingEnabled && blinkState)
+        a[2] = a[3] = 0;
+
+    uint32_t *dst = fb;
+    for (int line = 0; line < PMD85HOST_FB_HEIGHT; line++) {
+        const BYTE *row = vram + line * 64;
+        /* upstream counts h down from 255 and pairs a line with the one below
+         * on odd h, the one above on even h */
+        int h = PMD85HOST_FB_HEIGHT - 1 - line;
+        for (int i = 0; i < 48; i++) {
+            BYTE b = row[i];
+            BYTE d = (BYTE)((b & 0xC0) >> 6);
+            BYTE c;
+            if (colorace) {
+                const BYTE *pair = (h & 1) ? row + 64 : row - 64;
+                BYTE e = (BYTE)((pair[i] & 0xC0) >> 6);
+                c = pAttr[d | e | ((d & e) ? 0 : 4)];
+            } else if (!width384) {
+                c = a[d];
+            } else {
+                c = a[0];
+            }
+            int bits = width384 ? 8 : 6;
+            for (int k = 0; k < bits; k++)
+                *dst++ = k_palette[(b & (1 << k)) ? c : 0];
+        }
+    }
+}
+
+void PmdMachine::RunFrame()
+{
+    /* ---- BaseTimerCallback: keyboard, Consul 384 mode ---- */
+    systemPIO->ScanKeyboard(keyBuffer);
+    {
+        BYTE flag = systemPIO->width384;
+        if ((flag & 1) && (bool)(flag & 0xFE) != width384) {
+            width384 = (flag & 0xFE) != 0;
+            systemPIO->width384 = (flag & 0xFE);
+        }
+    }
+
+    if (becker) becker->FramePoll();
+
+    /* ---- CpuTimerCallback ---- */
+    const int tcpf = TCYCLES_PER_FRAME;
+    do {
+        WORD pc = cpu->GetPC();
+
+        /* switch PMD 85-3 to the compatibility mode */
+        if (pc == 0xE04C && model == CM_V3 && cfg.compat_mode && !memory->IsAllRAM())
+            cpu->SetPC(0xFFF0);
+
+        /* The debugger's hook may park this thread (a breakpoint, a step);
+         * the frame simply resumes from here when it lets go. */
+        if (g_instr_hook)
+            g_instr_hook(g_instr_hook_ctx, cpu->GetPC());
+
+        cpu->DoInstruction();
+    } while (cpu->GetTCycles() < tcpf);
+    cpu->SetTCycles(cpu->GetTCycles() - tcpf);
+
+    /* ---- the rest of BaseTimerCallback ---- */
+    mixer.EndFrame();
+    /* the blink attribute toggles every 500 ms (upstream counts wall-clock
+     * milliseconds; counting frames is the same at 50 Hz, and stays right
+     * when the machine runs slower or faster than real time) */
+    if (++blinkFrames >= 25) {
+        blinkFrames = 0;
+        blinkState = !blinkState;
+    }
+    Render();
+    frames++;
+    if (g_frame_sink)
+        g_frame_sink(fb, width384 ? 384 : 288, PMD85HOST_FB_HEIGHT, g_frame_user);
+}
+
+/* ======================================================================== */
+/* The C API                                                                */
+/* ======================================================================== */
+
+static PmdMachine *g_machine = nullptr;
+
+/* what other threads may ask about, refreshed by the emulator thread after
+ * every frame (the machine itself is the emulator thread's alone, and may be
+ * replaced by a reconfiguration at any frame boundary) */
+static std::atomic<int> g_link_up{0};
+static std::atomic<int> g_rx_pending{0};
+static std::atomic<int> g_rom_loads{0};
+static std::atomic<int> g_rom_last{0};
+static int g_rom_loads_base;  /* loads counted by machines already gone */
+
+static void publish_state(PmdMachine *m)
+{
+    if (!m) {
+        g_led.store(0);
+        g_mega_page.store(-1);
+        g_link_up.store(0);
+        g_rx_pending.store(0);
+        return;
+    }
+    g_led.store(m->systemPIO ? m->systemPIO->ledState : 0);
+    g_mega_page.store(m->megaModule ? m->megaModule->GetCurrentPage() : -1);
+    if (m->becker) {
+        int last = 0;
+        int loads = m->becker->RomLoads(&last);
+        g_link_up.store(m->becker->LinkUp() ? 1 : 0);
+        g_rx_pending.store(m->becker->RxPending());
+        if (loads) {
+            /* cumulative across machine rebuilds */
+            g_rom_loads.store(g_rom_loads_base + loads);
+            g_rom_last.store(last);
+        }
+    } else {
+        g_link_up.store(0);
+        g_rx_pending.store(0);
+    }
+}
+
+PmdMachine *pmd85host_machine(void) { return g_machine; }
+
+static void key_sink(int down, int usage)
+{
+    if (g_machine && usage > 0 && usage < SDL_NUM_SCANCODES)
+        g_machine->keyBuffer[usage] = down ? 1 : 0;
+}
+
+int pmd85host_core_start(const pmd85host_config *cfg)
+{
+    pmd85host_core_stop();
+    g_last_error[0] = '\0';
+    {
+        std::lock_guard<std::mutex> lk(g_cmd_mtx);
+        g_cmd_reset = g_cmd_reconfig = false;
+    }
+    {
+        std::lock_guard<std::mutex> lk(g_key_mtx);
+        g_key_queue.clear();
+        memset(g_key_held_ui, 0, sizeof g_key_held_ui);
+    }
+    pmd85host_clear_audio();
+    g_machine = new PmdMachine(*cfg);
+    if (!g_machine->ok()) {
+        delete g_machine;
+        g_machine = nullptr;
+        if (!g_last_error[0])
+            snprintf(g_last_error, sizeof g_last_error, "the machine could not be built");
+        return 0;
+    }
+    g_rom_loads_base = 0;
+    g_rom_loads.store(0);
+    g_rom_last.store(0);
+    publish_state(g_machine);
+    return 1;
+}
+
+void pmd85host_core_stop(void)
+{
+    delete g_machine;
+    g_machine = nullptr;
+    publish_state(nullptr);
+}
+
+void pmd85host_core_run_frame(void)
+{
+    bool reset = false, reconfig = false;
+    pmd85host_config cfg;
+    {
+        std::lock_guard<std::mutex> lk(g_cmd_mtx);
+        reset = g_cmd_reset;
+        reconfig = g_cmd_reconfig;
+        if (reconfig) cfg = g_cmd_config;
+        g_cmd_reset = g_cmd_reconfig = false;
+    }
+    if (reconfig) {
+        PmdMachine *m = new PmdMachine(cfg);
+        if (m->ok()) {
+            /* keep the keys the user is holding across the rebuild */
+            memcpy(m->keyBuffer, g_machine ? g_machine->keyBuffer : m->keyBuffer,
+                   sizeof m->keyBuffer);
+            g_rom_loads_base = g_rom_loads.load();
+            delete g_machine;
+            g_machine = m;
+        } else {
+            delete m;
+            host_log(2, "reconfiguration failed; keeping the running machine");
+        }
+    }
+    if (!g_machine) return;
+    if (reset) g_machine->Reset();
+    {
+        int color = g_cmd_color.exchange(-1);
+        if (color >= 0) g_machine->SetColorProfile(color);
+    }
+
+    pmd85host_drain_keys(key_sink);
+    g_machine->RunFrame();
+    publish_state(g_machine);
+}
+
+void pmd85host_set_becker_trace(Pmd85BeckerTrace fn) { PmdBecker::SetTrace(fn); }
+
+int pmd85host_becker_link_up(void) { return g_link_up.load(); }
+
+int pmd85host_becker_rx_pending(void) { return g_rx_pending.load(); }
+
+int pmd85host_becker_rom_loads(int *last_size)
+{
+    if (last_size) *last_size = g_rom_last.load();
+    return g_rom_loads.load();
+}

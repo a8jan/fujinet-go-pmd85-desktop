@@ -1,0 +1,64 @@
+FujiNet Go PMD 85 desktop -- rolling notes
+==========================================
+
+Done (2026-11-16, first pass)
+-----------------------------
+- Repo skeleton after fujinet-go-adam-desktop/PORTING.md, derived from
+  fujinet-go-coco-desktop (same transport direction: FujiNet listens).
+- cmake/Dependencies.cmake: GPMD85Emulator (mborik main 10c6ad7) and
+  fujinet-firmware (same pin as the CoCo app, COCO target) cloned at their
+  pins; GPMD85_SRC / FUJINET_SRC overrides.
+- cmake/StageGPMD85.cmake: stages only the machine sources (CPU, memory,
+  chips, interfaces, PMD 32, MIF 85, ROM/MegaModule, SAASound, CommonUtils)
+  into core/gpmd85-generated. Upstream's app layer (TEmulator, ScreenPMD85,
+  SoundDriver, Settings, gui/) is never built. No upstream file is edited:
+  tools/gpmd85/support/shim/SDL.h stands in for SDL on their include path.
+- core/pmd85/pmd85_host.cpp: the headless machine (model build, frame loop,
+  frame render, mixer, joystick GPIO, key queue, live colour change,
+  reconfigure); pmd85_becker.cpp: Becker port (DriveWire/TCP 3Eh/3Fh) from
+  the GPMD85Emulator becker-port WIP: lazy reconnect, non-blocking, a bounded
+  reply wait so DriveWire transactions finish within a frame, and the
+  ROM-module download into the MegaModule.
+- Session (pmd85session.h): FujiNet first + listener wait, 50 Hz wall-clock
+  pacing, frame store, settings, paths, embedded firmware (GPMD85Emulator
+  rom/ + the FujiNet CONFIG loader module), media import, FujiNet port
+  conflict warning, PMD85_BECKER_PORT override (rewrites the runtime tree's
+  [BOIP] port to match).
+- FujiNet runtime: tools/fujinet/build-fujinet-desktop.sh (COCO target,
+  [BOIP] port=65505, devicename=PMD 85, web UI 127.0.0.1:64003).
+- Tests: input_map, hostport, boot_smoke (all 8 models), becker (fake
+  DriveWire server incl. a 2-page ROM download), session (real time),
+  drivewire_smoke (the real FujiNet, end to end).
+- GNOME frontend (GTK4/libadwaita, built in the GNOME 51 SDK): display (4:3
+  TV default, square, integer), menus (model, ROM module, colours, RESET,
+  cold restart, fullscreen, import, FujiNet config/log), preferences, LEDs,
+  link/MegaModule status, embedded FujiNet web UI.
+- tools/dev-gnome.sh: sdl/build/run/shell in the GNOME 51 SDK, always with
+  the home mount (without it settings and the FujiNet tree are lost).
+- The FujiNet module is attached on every model with a module slot; the 2
+  and 2A auto-run it, elsewhere it is started from the monitor.
+
+Next
+----
+- Module start hints (pmd85session_module_hint, toasted on a model change):
+  the 85-1 (JOB 000001100000) and 85-3 (JUMP FFF0, or the 85-2
+  compatibility switch, which auto-runs it) are confirmed, the 85-2 and 2A
+  boot it by themselves; the Alfas get a generic line -- find their command.
+- Debugger: pmd85debug engine (CoCo-parity + ADAM's I/O-port breakpoints,
+  port names, io view), 8080 disassembler from ADAM's z80dasm.c shape,
+  ChipCpu8080 bus-tap patch in tools/gpmd85/patch-staged-tree.py; GNOME
+  debugger window. F12 currently only toasts.
+- Tape: a PTP deck in the host (IifTape::PrepareBlock/TapeCommand), flash
+  load traps (ported, gated on a tape being loaded), import routing.
+- Gamepad (gamepad_sdl.c from the CoCo app) -> joystick 4004/482 bits.
+- Keyboard options apply by cold restart; make exchZY/numpad live.
+- K11 (F12 is the debugger key): offer it another way (on-screen key or a
+  binding).
+- macOS (AppKit) frontend; then KDE and Windows.
+- CI (linux, macos, windows, flatpak), flatpak manifests, icons, metainfo
+  screenshots, README, release.
+- Upstream: offer GPMD85Emulator an SDL-free machine build option, so the
+  shim becomes unnecessary.
+- The firmware pin has no BUILD_COCO default fnconfig.ini, so the generic
+  (Atari-flavoured) host list ships -- same as the CoCo app. Consider a PMD
+  default host list (and fix the same lookup in the CoCo app's script).

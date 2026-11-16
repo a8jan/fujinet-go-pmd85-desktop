@@ -1,0 +1,42 @@
+# Licence compliance
+
+FujiNet Go PMD 85 is distributed under the GPL-3.0-or-later. Every component
+that enters the build, where it comes from, its licence, and how it gets in:
+
+| Component | Origin | Licence | How it enters the build |
+|---|---|---|---|
+| This repository | fujinet-go-pmd85-desktop | GPL-3.0-or-later | source |
+| Session/FujiNet/paths/settings code derived from fujinet-go-coco-desktop | Thomas Cherryhomes | GPL-3.0-or-later | adapted source |
+| GPMD85Emulator machine sources (`src/Chip*`, `SystemPIO`, `Iif*`, `Pmd32`, `Mif85`, `Mouse602`, `RomModule`, `RomMegaModule`, `CommonUtils`, `globals.h`, `sigslot.hpp`) | https://github.com/mborik/GPMD85Emulator, pinned in `cmake/Dependencies.cmake` | MIT (Roman Borik, Martin Borik); `sigslot.hpp` MIT (Pierre-Antoine Lacaze) | staged and compiled unmodified (`cmake/StageGPMD85.cmake`) |
+| Logic ported from GPMD85Emulator's TEmulator/ScreenPMD85/SoundDriver into `core/pmd85/pmd85_host.cpp` | same | MIT | adapted source, attribution in the file header |
+| SAASound (`saa/`) | via GPMD85Emulator | BSD-style (see `saa/LICENCE`) | staged and compiled |
+| Becker port device (`core/pmd85/pmd85_becker.cpp`) | GPMD85Emulator `becker-port` branch, Jan Krupa | GPL-3.0-or-later (contributed here) | adapted source |
+| fujinet-firmware | https://github.com/FujiNetWIFI/fujinet-firmware (fork pin, see `cmake/Dependencies.cmake`) | GPL-3.0 | built as `libfujinet`, loaded at run time |
+| SDL3 | libsdl.org | zlib | linked (audio) |
+| GTK4, libadwaita, WebKitGTK (GNOME frontend) | GNOME | LGPL-2.1-or-later | linked |
+
+## Firmware images
+
+Embedded into the binaries by `tools/gpmd85/embed-roms.py` and written to the
+user's ROM folder on first start (a user's own file of the same name wins):
+
+- **The GPMD85Emulator `rom/` set**: the system monitors of the PMD 85-1, -2,
+  -2A, -3, Mato, Didaktik Alfa/Alfa 2 and Consul 2717, and the stock ROM-module
+  contents (BASIC-G, Pascal, demos, the PMD 32 booter). These are 1980s
+  Czechoslovak firmware (Tesla Piešťany, Didaktik Skalica, Consul and
+  community authors) that GPMD85Emulator has redistributed for years; its
+  `rom/README.md` documents each image but states no licence. This project
+  bundles them on the same basis as the upstream emulator does. Any rights
+  holder who objects should open an issue and the image will be removed from
+  the embedded set (the machine then reads a user-supplied copy from the ROM
+  folder).
+- **`fujinet-config-loader.rmm`**: the FujiNet CONFIG loader module,
+  https://github.com/a8jan/fujinet-config-loader-pmd85 (MIT, Jan Krupa),
+  carrying FujiNet's `fujinet-config` (GPL-3.0). Provenance and checksum in
+  `tools/gpmd85/roms/README.md`.
+
+## Deliberately not used
+
+- GPMD85Emulator's Dear ImGui user interface (`gui/`), its SDL2/OpenGL screen
+  and sound drivers and its settings layer: not compiled; the native
+  frontends and `pmd85_host.cpp` replace them.

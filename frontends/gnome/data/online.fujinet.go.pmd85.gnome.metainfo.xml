@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>online.fujinet.go.pmd85.gnome</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>FujiNet Go PMD 85</name>
+  <summary>Self-contained Tesla PMD 85 with built-in FujiNet</summary>
+  <description>
+    <p>
+      A Tesla PMD 85 emulator with a FujiNet built in. The machine boots into
+      FujiNet CONFIG, from where ROM modules and other software are mounted
+      from the network or a local SD folder and loaded straight into the
+      MegaModule.
+    </p>
+    <p>
+      The emulation is GPMD85Emulator's: the PMD 85-1, 85-2, 85-2A and 85-3,
+      Mato, Didaktik Alfa and Alfa 2 and Consul 2717, with the MIF 85 music
+      interface and the PMD 32 disk drive.
+    </p>
+  </description>
+  <launchable type="desktop-id">online.fujinet.go.pmd85.gnome.desktop</launchable>
+  <url type="homepage">https://fujinet.online/</url>
+  <developer id="online.fujinet">
+    <name>FujiNet Go contributors</name>
+  </developer>
+  <content_rating type="oars-1.1"/>
+  <categories>
+    <category>Game</category>
+    <category>Emulator</category>
+  </categories>
+  <releases>
+    <release version="0.1.0" date="2026-11-16">
+      <description>
+        <p>First version.</p>
+      </description>
+    </release>
+  </releases>
+</component>
