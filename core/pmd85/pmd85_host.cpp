@@ -984,3 +984,205 @@ int pmd85host_becker_rom_loads(int *last_size)
     if (last_size) *last_size = g_rom_last.load();
     return g_rom_loads.load();
 }
+
+/* ======================================================================== */
+/* The debugger's view (pmd85_host_internal.h). Emulator thread, or parked. */
+
+int pmd85host_dbg_cpu(pmd85host_cpu *out)
+{
+    PmdMachine *m = g_machine;
+    BYTE st[16];
+    if (!out) return 0;
+    memset(out, 0, sizeof *out);
+    if (!m || !m->cpu) return 0;
+    m->cpu->GetChipState(st);
+    out->iff = (st[0] & 1) != 0;
+    out->halt = (st[0] & 8) != 0;
+    out->inta = (st[0] & 16) != 0;
+    out->af = m->cpu->GetAF();
+    out->bc = m->cpu->GetBC();
+    out->de = m->cpu->GetDE();
+    out->hl = m->cpu->GetHL();
+    out->sp = m->cpu->GetSP();
+    out->pc = m->cpu->GetPC();
+    return 1;
+}
+
+int pmd85host_dbg_cpu_set(const pmd85host_cpu *in)
+{
+    PmdMachine *m = g_machine;
+    if (!m || !m->cpu || !in) return 0;
+    m->cpu->SetAF(in->af);
+    m->cpu->SetBC(in->bc);
+    m->cpu->SetDE(in->de);
+    m->cpu->SetHL(in->hl);
+    m->cpu->SetSP(in->sp);
+    m->cpu->SetPC(in->pc);
+    return 1;
+}
+
+int pmd85host_dbg_peek(uint16_t addr)
+{
+    PmdMachine *m = g_machine;
+    if (!m || !m->memory) return -1;
+    return m->memory->ReadByte(addr);   /* a plain pointer read, no side effect */
+}
+
+/* Whether a read at addr is served from the ROM image. ChipMemory keeps
+ * the answer behind protected members (GetMemState says "read/write" where
+ * reads come from ROM and writes go to the RAM below, as on the 2A's
+ * monitor), so this asks through a derived view of the same object -- the
+ * memory classes stay unmodified. */
+class PmdMemProbe : public ChipMemory {
+public:
+    static bool ReadsRom(ChipMemory *mem, int addr)
+    {
+        PmdMemProbe *m = static_cast<PmdMemProbe *>(mem);
+        BYTE *p = nullptr;
+        if (m->FindPointer(addr, 1, OP_READ, &p) < 1 || !p || !m->memROM)
+            return false;
+        return p >= m->memROM && p < m->memROM + m->sizeROM;
+    }
+};
+
+int pmd85host_dbg_mem_state(uint16_t addr)
+{
+    PmdMachine *m = g_machine;
+    BYTE st = 0;
+    if (!m || !m->memory) return 0;
+    m->memory->GetMemState(addr, &st, nullptr);
+    return (st & MA_RO ? PMD85HOST_MEM_R : 0) | (st & MA_WO ? PMD85HOST_MEM_W : 0) |
+           (st & MA_VRAM ? PMD85HOST_MEM_VRAM : 0) |
+           (st & MA_VRAM_B ? PMD85HOST_MEM_VRAM_ASIDE : 0) |
+           ((st & MA_RO) && PmdMemProbe::ReadsRom(m->memory, addr) ? PMD85HOST_MEM_ROM : 0);
+}
+
+int pmd85host_dbg_poke(uint16_t addr, uint8_t value)
+{
+    PmdMachine *m = g_machine;
+    int st = pmd85host_dbg_mem_state(addr);
+    /* where reads come from ROM a write would land unseen in the RAM below */
+    if (!m || !m->memory || !(st & PMD85HOST_MEM_W) || (st & PMD85HOST_MEM_ROM)) return 0;
+    m->memory->WriteByte(addr, value);
+    return 1;
+}
+
+int pmd85host_dbg_clock(uint64_t *tstates, uint64_t *frame, int *in_frame)
+{
+    PmdMachine *m = g_machine;
+    int t;
+    if (!m || !m->cpu) return 0;
+    t = m->cpu->GetTCycles();
+    if (tstates) *tstates = m->frames * (uint64_t)TCYCLES_PER_FRAME + (uint64_t)(t > 0 ? t : 0);
+    if (frame) *frame = m->frames;
+    if (in_frame) *in_frame = t;
+    return 1;
+}
+
+void *pmd85host_machine_ptr(void)
+{
+    return g_machine;
+}
+
+int pmd85host_dbg_model(void)
+{
+    PmdMachine *m = g_machine;
+    return m ? (int)m->model : -1;
+}
+
+const char *pmd85host_port_name(uint8_t port)
+{
+    static const char *const sys[4] = { "SYS PIO PA", "SYS PIO PB", "SYS PIO PC", "SYS PIO CWR" };
+    static const char *const rom[4] = { "ROM PIO PA", "ROM PIO PB", "ROM PIO PC", "ROM PIO CWR" };
+    static const char *const gpio[4] = { "GPIO PA", "GPIO PB", "GPIO PC", "GPIO CWR" };
+    static const char *const pit[4] = { "PIT CT0", "PIT CT1", "PIT CT2", "PIT CWR" };
+    static const char *const usart[2] = { "USART data", "USART cmd/status" };
+    PmdMachine *m = g_machine;
+    TComputerModel model;
+
+    if (!m) return nullptr;
+    model = m->model;
+    /* in the order Build() adds them, as the CPU's FindDevice walks them */
+    if ((port & SYSTEM_PIO_MASK) == SYSTEM_PIO_ADR) return sys[port & 3];
+    if (m->ifGpio && (port & IIF_GPIO_MASK) == IIF_GPIO_ADR) return gpio[port & 3];
+    if (m->ifTimer && (port & IIF_TIMER_MASK) == IIF_TIMER_ADR) return pit[port & 3];
+    if (model != CM_MATO) {
+        const bool alfa = model == CM_ALFA || model == CM_ALFA2;
+        if (alfa ? (port & IIF_TAPE_MASK_A) == IIF_TAPE_ADR_A
+                 : (port & IIF_TAPE_MASK) == IIF_TAPE_ADR)
+            return usart[(port & (alfa ? IIF_TAPE_REG_MASK_A : IIF_TAPE_REG_MASK)) & 1];
+    }
+    if ((model == CM_V2A || model == CM_V3) && m->cfg.ram256k && port == MM256_REG_ADR)
+        return "MM256 page";
+    if (m->mif85 && (port & MIF85_MASK) == MIF85_ADR) return "MIF 85";
+    if (m->becker && (port & PMD85_BECKER_MASK) == PMD85_BECKER_ADR)
+        return (port & 1) ? "BECKER data" : "BECKER status";
+    if (m->romModule && (port & ROM_MODULE_MASK) == ROM_MODULE_ADR) return rom[port & 3];
+    if (m->megaModule && port == MEGA_MODULE_ADR) return "MEGA page";
+    return nullptr;
+}
+
+static void pio_state(ChipPIO8255 *pio, pmd85debug_pio *out)
+{
+    BYTE st[16];
+    memset(out, 0, sizeof *out);
+    if (!pio) return;
+    pio->GetChipState(st, true);
+    out->valid = 1;
+    out->cwr = st[0];
+    out->c = st[1];
+    out->b = st[2];
+    out->a = st[3];
+    out->inte = st[4];
+    out->in_c = st[5];
+    out->in_b = st[6];
+    out->in_a = st[8];
+}
+
+int pmd85host_dbg_io(pmd85debug_io *out)
+{
+    PmdMachine *m = g_machine;
+    if (!out) return 0;
+    memset(out, 0, sizeof *out);
+    out->mm256 = -1;
+    out->mega_page = -1;
+    if (!m) return 0;
+    out->model = (int)m->model;
+    pio_state(m->systemPIO, &out->sys);
+    pio_state(m->ifGpio, &out->gpio);
+    pio_state(m->romModule, &out->rom);
+    if (m->ifTimer)
+        for (int i = 0; i < 3; i++) {
+            const auto &c = m->ifTimer->Counters[i];
+            out->pit[i].valid = 1;
+            out->pit[i].cwr = c.CWR;
+            out->pit[i].init = c.InitValue;
+            out->pit[i].value = c.CounterValue;
+            out->pit[i].gate = c.Gate;
+            out->pit[i].out = c.Out;
+            out->pit[i].counting = c.Counting;
+        }
+    if (m->ifTape && m->model != CM_MATO) {
+        BYTE st[16];
+        ((IifTapePMD85 *)m->ifTape)->GetChipState(st, true);
+        out->usart_valid = 1;
+        out->usart_mode = st[0];
+        out->usart_command = st[3];
+        out->usart_status = st[4];
+    }
+    if ((m->model == CM_V2A || m->model == CM_V3) && m->cfg.ram256k)
+        out->mm256 = m->memory->GetPage();
+    out->mega_page = m->megaModule ? m->megaModule->GetCurrentPage() : -1;
+    out->allram = m->memory->IsAllRAM();
+    out->remapped = m->memory->IsRemapped();
+    out->in_reset = m->memory->IsInReset();
+    out->led = m->systemPIO ? m->systemPIO->ledState : 0;
+    out->becker = m->becker != nullptr;
+    if (m->becker) {
+        out->becker_link = m->becker->LinkUp() ? 1 : 0;
+        out->becker_rx = m->becker->RxPending();
+    }
+    out->mif85 = m->mif85 != nullptr;
+    out->pmd32 = m->pmd32 != nullptr;
+    return 1;
+}

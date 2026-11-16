@@ -37,6 +37,13 @@ Done (2026-11-16, first pass)
   the home mount (without it settings and the FujiNet tree are lost).
 - Display: "Sharp" scaling (default; Nearest/Smooth kept), picture snapped
   to device pixels, integer mode in device pixels.
+- Debugger engine (core/debugger, pmd85debug.h): pause/step/over/out/run
+  to/frames, exec/read/write/IN/OUT breakpoints with conditions, registers
+  and memory edits, memory map (ROM vs RAM via a derived probe), trace, I/O
+  log, port names, chips view, symbols (EQU / z88dk .map), prompt, DriveWire
+  trace incl. the ROM-module download. 8080 disassembler (Intel or Z80
+  spelling), checked against GPMD85's tables. No upstream patch: accesses
+  are decoded from the instruction in the host's per-instruction hook.
 - The FujiNet module is attached on every model with a module slot; the 2
   and 2A auto-run it, elsewhere it is started from the monitor.
 
@@ -46,10 +53,12 @@ Next
   the 85-1 (JOB 000001100000) and 85-3 (JUMP FFF0, or the 85-2
   compatibility switch, which auto-runs it) are confirmed, the 85-2 and 2A
   boot it by themselves; the Alfas get a generic line -- find their command.
-- Debugger: pmd85debug engine (CoCo-parity + ADAM's I/O-port breakpoints,
-  port names, io view), 8080 disassembler from ADAM's z80dasm.c shape,
-  ChipCpu8080 bus-tap patch in tools/gpmd85/patch-staged-tree.py; GNOME
-  debugger window. F12 currently only toasts.
+- Debugger, GNOME window (F12): the engine is done (below); port the CoCo
+  app's frontends/gnome/debugger window to it -- Console, Disassembly,
+  Memory, Breakpoints (incl. IN/OUT), Watches, Trace, I/O (chips + the I/O
+  log), Symbols, FujiNet tabs; a VRAM/attribute Video tab after that.
+- Debugger symbols: per-model monitor entry-point tables, from a ROM
+  disassembly (none built in yet, deliberately).
 - Tape: a PTP deck in the host (IifTape::PrepareBlock/TapeCommand), flash
   load traps (ported, gated on a tape being loaded), import routing.
 - Gamepad (gamepad_sdl.c from the CoCo app) -> joystick 4004/482 bits.

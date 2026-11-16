@@ -40,7 +40,8 @@ target_include_directories(gpmd85_core BEFORE PUBLIC
   "${CMAKE_SOURCE_DIR}/tools/gpmd85/support/shim")
 target_include_directories(gpmd85_core PUBLIC
   "${GP}" "${GP}/src" "${GP}/saa"
-  "${CMAKE_CURRENT_SOURCE_DIR}/pmd85")
+  "${CMAKE_CURRENT_SOURCE_DIR}/pmd85"
+  "${CMAKE_CURRENT_SOURCE_DIR}/include")
 # GPMD85Emulator's own warning policy (its CMakeLists: -Wno-deprecated); the
 # rest are upstream's to fix, and silencing them only on its sources keeps
 # ours visible.
@@ -87,6 +88,12 @@ add_library(pmd85session STATIC
   src/audio_sdl.c
   src/fujinet_runtime.c
   debugger/debugger.c
+  debugger/i8080dasm.c
+  debugger/expr.c
+  debugger/symtab.c
+  debugger/memtools.c
+  debugger/dwtrace.c
+  debugger/prompt.c
   "${PMD85_ROMS_C}"
 )
 target_include_directories(pmd85session
@@ -124,6 +131,11 @@ add_executable(hostport_test tests/hostport_test.c)
 target_link_libraries(hostport_test pmd85session)
 add_test(NAME hostport COMMAND hostport_test)
 
+add_executable(dasm_test tests/dasm_test.c debugger/i8080dasm.c)
+target_include_directories(dasm_test PRIVATE include)
+add_test(NAME dasm COMMAND dasm_test "${GPMD85_DIR}")
+set_tests_properties(dasm PROPERTIES SKIP_RETURN_CODE 77)
+
 add_executable(boot_smoke tests/boot_smoke.c)
 target_link_libraries(boot_smoke pmd85session)
 target_include_directories(boot_smoke PRIVATE src)
@@ -140,6 +152,11 @@ add_executable(session_test tests/session_test.c)
 target_link_libraries(session_test pmd85session)
 add_test(NAME session COMMAND session_test)
 set_tests_properties(session PROPERTIES SKIP_RETURN_CODE 77)
+
+add_executable(debug_test tests/debug_test.c)
+target_link_libraries(debug_test pmd85session)
+add_test(NAME debug COMMAND debug_test)
+set_tests_properties(debug PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
 
 add_executable(drivewire_smoke tests/drivewire_smoke.c)
 target_link_libraries(drivewire_smoke pmd85session)

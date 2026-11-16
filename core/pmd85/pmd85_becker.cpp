@@ -542,6 +542,7 @@ void PmdBecker::RomLoadStep(int waitMs)
         case RS_CMD:
             n = WriteSock(romCmd + romOffset, sizeof romCmd - romOffset);
             if (n < 0) return;
+            if (n > 0) trace(1, romCmd + romOffset, (size_t)n);
             romOffset += (size_t)n;
             if (romOffset == sizeof romCmd) {
                 romOffset = 0;
@@ -554,6 +555,7 @@ void PmdBecker::RomLoadStep(int waitMs)
             n = ReadSock(romBlockBuf.data() + romOffset,
                          ROM_BLOCK_SIZE - romOffset, w > 0 ? w : 0);
             if (n < 0) return;
+            if (n > 0) trace(0, romBlockBuf.data() + romOffset, (size_t)n);
             romOffset += (size_t)n;
             if (romOffset == ROM_BLOCK_SIZE) {
                 unsigned sum = 0;
@@ -570,6 +572,7 @@ void PmdBecker::RomLoadStep(int waitMs)
         case RS_SUM:
             n = WriteSock(romSum + romOffset, sizeof romSum - romOffset);
             if (n < 0) return;
+            if (n > 0) trace(1, romSum + romOffset, (size_t)n);
             romOffset += (size_t)n;
             if (romOffset == sizeof romSum) {
                 romOffset = 0;
@@ -583,6 +586,7 @@ void PmdBecker::RomLoadStep(int waitMs)
             n = ReadSock(&rc, 1, w > 0 ? w : 0);
             if (n < 0) return;
             if (n == 1) {
+                trace(0, &rc, 1);
                 if (rc == 0) {
                     romData.insert(romData.end(), romBlockBuf.begin(),
                                    romBlockBuf.end());
