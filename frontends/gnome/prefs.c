@@ -5,7 +5,7 @@
  *
  * Three kinds of option, by when they take effect:
  *
- *   display    how the widget paints (aspect, smoothing) -- at once;
+ *   display    how the widget paints (aspect, scaling) -- at once;
  *   machine    model, ROM module, peripherals -- the machine is rebuilt and
  *              cold-started at once (FujiNet stays up, the link reconnects);
  *              the colour profile applies without a restart;
@@ -26,6 +26,8 @@
 
 static const char *const aspect_names[] = {"TV (4:3)", "Square pixels",
                                            "Integer scale", NULL};
+/* in Pmd85Scaling order */
+static const char *const scaling_names[] = {"Sharp", "Nearest", "Smooth", NULL};
 
 typedef struct {
     Pmd85Window *window;
@@ -48,6 +50,11 @@ static GtkStringList *string_list(const char *(*name_at)(int))
 static const char *aspect_name(int i)
 {
     return (i >= 0 && i < 3) ? aspect_names[i] : NULL;
+}
+
+static const char *scaling_name(int i)
+{
+    return (i >= 0 && i < 3) ? scaling_names[i] : NULL;
 }
 
 static GtkWidget *combo_row(const char *title, const char *subtitle,
@@ -126,11 +133,11 @@ static void aspect_changed(GObject *row, GParamSpec *p, gpointer ud)
     pmd85_window_apply_display(st->window);
 }
 
-static void smooth_changed(GObject *row, GParamSpec *p, gpointer ud)
+static void scaling_changed(GObject *row, GParamSpec *p, gpointer ud)
 {
     PrefsState *st = ud;
     (void)p;
-    pmd85session_set_int(st->session, "smooth_scaling", active(row));
+    pmd85session_set_int(st->session, "scaling", selected(row));
     pmd85_window_apply_display(st->window);
 }
 
@@ -274,9 +281,11 @@ static AdwPreferencesPage *display_page(PrefsState *st)
     adw_preferences_group_add(g, combo_row("Aspect", NULL, aspect_name,
         pmd85session_get_int(s, "aspect_mode", PMD85_ASPECT_TV_4_3),
         G_CALLBACK(aspect_changed), st));
-    adw_preferences_group_add(g, switch_row("Smooth scaling", NULL,
-        pmd85session_get_int(s, "smooth_scaling", 0), "smooth_scaling",
-        G_CALLBACK(smooth_changed), st));
+    adw_preferences_group_add(g, combo_row("Scaling",
+        "Sharp: even, crisp pixels at any size. Nearest: crisp, uneven. "
+        "Smooth: soft. (Integer scale is always crisp.)",
+        scaling_name, pmd85session_get_int(s, "scaling", PMD85_SCALING_SHARP),
+        G_CALLBACK(scaling_changed), st));
     adw_preferences_page_add(page, g);
     return page;
 }

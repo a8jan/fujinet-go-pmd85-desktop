@@ -54,8 +54,10 @@ void pmd85_window_apply_display(Pmd85Window *self)
         self->display,
         (Pmd85AspectMode)pmd85session_get_int(self->session, "aspect_mode",
                                               PMD85_ASPECT_TV_4_3));
-    pmd85_display_set_smooth(
-        self->display, pmd85session_get_int(self->session, "smooth_scaling", 0));
+    pmd85_display_set_scaling(
+        self->display,
+        (Pmd85Scaling)pmd85session_get_int(self->session, "scaling",
+                                           PMD85_SCALING_SHARP));
 }
 
 static void show_start_warnings(Pmd85Window *self)

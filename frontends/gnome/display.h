@@ -24,8 +24,20 @@ typedef enum {
     PMD85_ASPECT_INTEGER = 2,
 } Pmd85AspectMode;
 
+/* How the picture is stretched to the window (integer mode is always
+ * nearest: its scale is whole already). */
+typedef enum {
+    /* Default: an integer nearest-neighbour blow-up, then a linear filter
+     * for the remaining fraction -- even, crisp pixels at any size. */
+    PMD85_SCALING_SHARP = 0,
+    /* Nearest-neighbour: crisp, but pixels of uneven width at most sizes. */
+    PMD85_SCALING_NEAREST = 1,
+    /* Linear: soft. */
+    PMD85_SCALING_SMOOTH = 2,
+} Pmd85Scaling;
+
 GtkWidget *pmd85_display_new(pmd85session *session);
 void pmd85_display_set_aspect_mode(Pmd85Display *self, Pmd85AspectMode mode);
-void pmd85_display_set_smooth(Pmd85Display *self, gboolean smooth);
+void pmd85_display_set_scaling(Pmd85Display *self, Pmd85Scaling scaling);
 
 G_END_DECLS

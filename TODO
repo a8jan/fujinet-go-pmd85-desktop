@@ -35,6 +35,8 @@ Done (2026-11-16, first pass)
   link/MegaModule status, embedded FujiNet web UI.
 - tools/dev-gnome.sh: sdl/build/run/shell in the GNOME 51 SDK, always with
   the home mount (without it settings and the FujiNet tree are lost).
+- Display: "Sharp" scaling (default; Nearest/Smooth kept), picture snapped
+  to device pixels, integer mode in device pixels.
 - The FujiNet module is attached on every model with a module slot; the 2
   and 2A auto-run it, elsewhere it is started from the monitor.
 
@@ -57,6 +59,11 @@ Next
 - macOS (AppKit) frontend; then KDE and Windows.
 - CI (linux, macos, windows, flatpak), flatpak manifests, icons, metainfo
   screenshots, README, release.
+- Upstream: tell the family's display-widget author (Thomas Cherryhomes,
+  fujinet-go-coco/adam/apple2/atari800-desktop share frontends/gnome/
+  display.c) about the sharp filter here: integer CPU prescale + linear
+  remainder, rect snapped to device pixels (fractional scaling incl.).
+  Verified on COSMIC at 130%.
 - Upstream: offer GPMD85Emulator an SDL-free machine build option, so the
   shim becomes unnecessary.
 - The firmware pin has no BUILD_COCO default fnconfig.ini, so the generic

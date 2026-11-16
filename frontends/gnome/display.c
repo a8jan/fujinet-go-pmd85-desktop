@@ -16,11 +16,26 @@
  * the emulator (see session.c); they are kept so the widget stays the same
  * as the family's.
  *
+ * Scaling. The 4:3 picture needs a non-integer stretch (288 pixels into, say,
+ * 1024), which nearest-neighbour can only do with pixels of uneven width, and
+ * a linear filter blurs every pixel edge across several screen pixels. The
+ * default "sharp" filter does both in turn: the frame is blown up on the CPU
+ * by the largest whole factor per axis that still fits (capped, so a 4K
+ * screen does not upload tens of megabytes a frame), and GSK's linear filter
+ * covers only the remaining fraction -- every emulated pixel the same size,
+ * with at most a screen pixel or two of blend at its edge. The picture's
+ * rectangle is snapped to whole device pixels (the surface's real, possibly
+ * fractional scale), so its edges and the integer mode's pixels land on the
+ * screen's grid.
+ *
  * Copyright (C) 2026 Thomas Cherryhomes, FujiNet Go contributors
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
 #include "display.h"
+
+#include <math.h>
+#include <string.h>
 
 /* ---- frame buffer pool ----------------------------------------------------
  * The session copies a frame straight into a pooled buffer and the texture
@@ -32,7 +47,8 @@
 typedef struct {
     gatomicrefcount refs;
     GMutex lock;
-    GPtrArray *spare;      /* idle guint32 buffers, FB_MAX_WIDTH * FB_MAX_HEIGHT each */
+    GPtrArray *spare;      /* idle buffers of `size` bytes each */
+    gsize size;
 } FramePool;
 
 typedef struct {
@@ -42,9 +58,10 @@ typedef struct {
 
 #define POOL_KEEP 4
 
-static FramePool *pool_new(void)
+static FramePool *pool_new(gsize size)
 {
     FramePool *p = g_new0(FramePool, 1);
+    p->size = size;
     g_atomic_ref_count_init(&p->refs);
     g_mutex_init(&p->lock);
     p->spare = g_ptr_array_new_with_free_func(g_free);
@@ -68,8 +85,7 @@ static guint32 *pool_take(FramePool *p)
     if (p->spare->len > 0)
         px = g_ptr_array_steal_index(p->spare, p->spare->len - 1);
     g_mutex_unlock(&p->lock);
-    return px ? px : g_malloc((gsize)PMD85SESSION_FB_MAX_WIDTH *
-                              PMD85SESSION_FB_MAX_HEIGHT * sizeof(guint32));
+    return px ? px : g_malloc(p->size);
 }
 
 static void pool_give(FramePool *p, guint32 *px)
@@ -97,16 +113,30 @@ struct _Pmd85Display {
 
     pmd85session *session;
     GdkTexture *texture;
+    const guint32 *px;     /* the texture's pixels, alive as long as it is */
     FramePool *pool;
     int fb_w;
     int fb_h;
+    guint frame_gen;       /* bumped with every new frame */
+
+    /* the sharp filter's integer blow-up of the current frame */
+    GdkTexture *big;
+    FramePool *big_pool;
+    guint big_gen;
+    int big_kx, big_ky;
+
     uint64_t serial;
     guint tick_id;
     gulong suspended_id;   /* notify::suspended on the toplevel, while mapped */
     GtkWindow *toplevel;
     Pmd85AspectMode aspect_mode;
-    gboolean smooth;
+    Pmd85Scaling scaling;
 };
+
+/* Largest blow-up per axis for the sharp filter. Past this the leftover
+ * linear stretch is under 1/6 of an emulated pixel, and the upload stays
+ * around 10 MB a frame even fullscreen on a 4K screen. */
+#define SHARP_MAX_FACTOR 6
 
 G_DEFINE_FINAL_TYPE(Pmd85Display, pmd85_display, GTK_TYPE_WIDGET)
 
@@ -120,18 +150,19 @@ G_DEFINE_FINAL_TYPE(Pmd85Display, pmd85_display, GTK_TYPE_WIDGET)
 #define PMD85_GDK_FORMAT GDK_MEMORY_B8G8R8X8
 #endif
 
-/* Wrap px (w x h, XRGB8888 straight from the session) in the texture. The
- * previous texture, when it was the same size, goes in as the update source
- * so GSK can reuse its GPU texture instead of making a new one. Takes
- * ownership of px. */
-static void publish_texture(Pmd85Display *self, guint32 *px, int w, int h)
+/* Wrap px (w x h XRGB8888, a buffer from pool) in a texture that replaces
+ * *slot. The previous texture, when it was the same size, goes in as the
+ * update source so GSK can reuse its GPU texture instead of making a new
+ * one. Takes ownership of px. */
+static void build_texture(GdkTexture **slot, FramePool *pool, guint32 *px,
+                          int w, int h)
 {
     GdkMemoryTextureBuilder *b = gdk_memory_texture_builder_new();
     FrameLoan *loan = g_new(FrameLoan, 1);
     GBytes *bytes;
 
-    g_atomic_ref_count_inc(&self->pool->refs);
-    loan->pool = self->pool;
+    g_atomic_ref_count_inc(&pool->refs);
+    loan->pool = pool;
     loan->px = px;
     bytes = g_bytes_new_with_free_func(px, (gsize)w * h * sizeof(guint32),
                                        loan_release, loan);
@@ -140,18 +171,54 @@ static void publish_texture(Pmd85Display *self, guint32 *px, int w, int h)
     gdk_memory_texture_builder_set_width(b, w);
     gdk_memory_texture_builder_set_height(b, h);
     gdk_memory_texture_builder_set_format(b, PMD85_GDK_FORMAT);
-    if (self->texture && self->fb_w == w && self->fb_h == h) {
+    if (*slot && gdk_texture_get_width(*slot) == w &&
+        gdk_texture_get_height(*slot) == h) {
         cairo_rectangle_int_t all = { 0, 0, w, h };
         cairo_region_t *region = cairo_region_create_rectangle(&all);
 
-        gdk_memory_texture_builder_set_update_texture(b, self->texture);
+        gdk_memory_texture_builder_set_update_texture(b, *slot);
         gdk_memory_texture_builder_set_update_region(b, region);
         cairo_region_destroy(region);
     }
-    g_clear_object(&self->texture);
-    self->texture = gdk_memory_texture_builder_build(b);
+    g_clear_object(slot);
+    *slot = gdk_memory_texture_builder_build(b);
     g_bytes_unref(bytes);
     g_object_unref(b);
+}
+
+/* The current frame blown up kx by ky, nearest-neighbour, rebuilt only when
+ * the frame or the factors change. */
+static GdkTexture *sharp_texture(Pmd85Display *self, int kx, int ky)
+{
+    const int sw = self->fb_w, sh = self->fb_h;
+    const int bw = sw * kx, bh = sh * ky;
+    guint32 *dst;
+    int x, y, i;
+
+    if (self->big && self->big_gen == self->frame_gen &&
+        self->big_kx == kx && self->big_ky == ky)
+        return self->big;
+
+    if (!self->big_pool || self->big_pool->size != (gsize)bw * bh * sizeof(guint32)) {
+        if (self->big_pool) pool_unref(self->big_pool);
+        self->big_pool = pool_new((gsize)bw * bh * sizeof(guint32));
+    }
+    dst = pool_take(self->big_pool);
+    for (y = 0; y < sh; y++) {
+        const guint32 *src = self->px + (gsize)y * sw;
+        guint32 *row = dst + (gsize)y * ky * bw;
+        guint32 *o = row;
+        for (x = 0; x < sw; x++)
+            for (i = 0; i < kx; i++)
+                *o++ = src[x];
+        for (i = 1; i < ky; i++)
+            memcpy(row + (gsize)i * bw, row, (gsize)bw * sizeof(guint32));
+    }
+    build_texture(&self->big, self->big_pool, dst, bw, bh);
+    self->big_gen = self->frame_gen;
+    self->big_kx = kx;
+    self->big_ky = ky;
+    return self->big;
 }
 
 static gboolean tick_cb(GtkWidget *widget, GdkFrameClock *clock,
@@ -172,9 +239,11 @@ static gboolean tick_cb(GtkWidget *widget, GdkFrameClock *clock,
     px = pool_take(self->pool);
     if (pmd85session_copy_frame(self->session, px, &self->serial, &w, &h)
         && w > 0 && h > 0) {
-        publish_texture(self, px, w, h);
+        build_texture(&self->texture, self->pool, px, w, h);
+        self->px = px;
         self->fb_w = w;
         self->fb_h = h;
+        self->frame_gen++;
         gtk_widget_queue_draw(widget);
     } else {
         pool_give(self->pool, px);
@@ -236,41 +305,92 @@ static void pmd85_display_unmap(GtkWidget *widget)
     update_tick(self);
 }
 
+/* The widget's origin in its surface's coordinates, and the surface's
+ * device-pixel scale: what rounding to the screen's pixel grid needs. */
+static double device_geometry(GtkWidget *widget, double *ox, double *oy)
+{
+    GtkNative *native = gtk_widget_get_native(widget);
+    graphene_point_t p;
+    double tx = 0, ty = 0, scale = 1;
+
+    *ox = *oy = 0;
+    if (!native)
+        return 1;
+    if (gtk_native_get_surface(native))
+        scale = gdk_surface_get_scale(gtk_native_get_surface(native));
+    if (scale <= 0)
+        scale = 1;
+    gtk_native_get_surface_transform(native, &tx, &ty);
+    if (gtk_widget_compute_point(widget, GTK_WIDGET(native),
+                                 &GRAPHENE_POINT_INIT(0, 0), &p)) {
+        *ox = p.x + tx;
+        *oy = p.y + ty;
+    }
+    return scale;
+}
+
 static void pmd85_display_snapshot(GtkWidget *widget, GtkSnapshot *snapshot)
 {
     Pmd85Display *self = PMD85_DISPLAY(widget);
     const float w = (float)gtk_widget_get_width(widget);
     const float h = (float)gtk_widget_get_height(widget);
-    float dw, dh, aspect;
-    graphene_rect_t dest;
+    double ds, ox, oy, dev_w, dev_h, dw, dh, x0, y0, aspect;
+    GdkTexture *tex;
+    GskScalingFilter filter;
 
     gtk_snapshot_append_color(snapshot, &(GdkRGBA){0, 0, 0, 1},
                               &GRAPHENE_RECT_INIT(0, 0, w, h));
     if (!self->texture || w < 1 || h < 1 || self->fb_w < 1 || self->fb_h < 1)
         return;
 
+    /* everything below in device pixels */
+    ds = device_geometry(widget, &ox, &oy);
+    dev_w = w * ds;
+    dev_h = h * ds;
+
     aspect = self->aspect_mode == PMD85_ASPECT_TV_4_3
-                 ? 4.0f / 3.0f
-                 : (float)self->fb_w / (float)self->fb_h;
+                 ? 4.0 / 3.0
+                 : (double)self->fb_w / (double)self->fb_h;
 
     if (self->aspect_mode == PMD85_ASPECT_INTEGER) {
-        int scale = (int)MIN(w / self->fb_w, h / self->fb_h);
+        int scale = (int)MIN(dev_w / self->fb_w, dev_h / self->fb_h);
         if (scale < 1) scale = 1;
-        dw = (float)(scale * self->fb_w);
-        dh = (float)(scale * self->fb_h);
-    } else if (w / h > aspect) {
-        dh = h;
-        dw = h * aspect;
+        dw = (double)scale * self->fb_w;
+        dh = (double)scale * self->fb_h;
+    } else if (dev_w / dev_h > aspect) {
+        dh = floor(dev_h);
+        dw = round(dh * aspect);
     } else {
-        dw = w;
-        dh = w / aspect;
+        dw = floor(dev_w);
+        dh = round(dw / aspect);
     }
 
-    dest = GRAPHENE_RECT_INIT((w - dw) / 2.0f, (h - dh) / 2.0f, dw, dh);
-    gtk_snapshot_append_scaled_texture(snapshot, self->texture,
-                                       self->smooth ? GSK_SCALING_FILTER_LINEAR
-                                                    : GSK_SCALING_FILTER_NEAREST,
-                                       &dest);
+    /* centred, on the screen's pixel grid */
+    x0 = round(ox * ds + (dev_w - dw) / 2.0);
+    y0 = round(oy * ds + (dev_h - dh) / 2.0);
+
+    tex = self->texture;
+    switch (self->aspect_mode == PMD85_ASPECT_INTEGER ? PMD85_SCALING_NEAREST
+                                                      : self->scaling) {
+    case PMD85_SCALING_SMOOTH:
+        filter = GSK_SCALING_FILTER_LINEAR;
+        break;
+    case PMD85_SCALING_SHARP: {
+        int kx = CLAMP((int)(dw / self->fb_w), 1, SHARP_MAX_FACTOR);
+        int ky = CLAMP((int)(dh / self->fb_h), 1, SHARP_MAX_FACTOR);
+        if (kx > 1 || ky > 1)
+            tex = sharp_texture(self, kx, ky);
+        filter = GSK_SCALING_FILTER_LINEAR;
+        break;
+    }
+    default:
+        filter = GSK_SCALING_FILTER_NEAREST;
+        break;
+    }
+
+    gtk_snapshot_append_scaled_texture(snapshot, tex, filter,
+        &GRAPHENE_RECT_INIT((float)(x0 / ds - ox), (float)(y0 / ds - oy),
+                            (float)(dw / ds), (float)(dh / ds)));
 }
 
 static void pmd85_display_dispose(GObject *object)
@@ -281,9 +401,15 @@ static void pmd85_display_dispose(GObject *object)
         self->tick_id = 0;
     }
     g_clear_object(&self->texture);
+    g_clear_object(&self->big);
+    self->px = NULL;
     if (self->pool) {
         pool_unref(self->pool);
         self->pool = NULL;
+    }
+    if (self->big_pool) {
+        pool_unref(self->big_pool);
+        self->big_pool = NULL;
     }
     G_OBJECT_CLASS(pmd85_display_parent_class)->dispose(object);
 }
@@ -301,9 +427,10 @@ static void pmd85_display_class_init(Pmd85DisplayClass *klass)
 
 static void pmd85_display_init(Pmd85Display *self)
 {
-    self->pool = pool_new();
+    self->pool = pool_new((gsize)PMD85SESSION_FB_MAX_WIDTH *
+                          PMD85SESSION_FB_MAX_HEIGHT * sizeof(guint32));
     self->aspect_mode = PMD85_ASPECT_TV_4_3;
-    self->smooth = FALSE;
+    self->scaling = PMD85_SCALING_SHARP;
     gtk_widget_set_hexpand(GTK_WIDGET(self), TRUE);
     gtk_widget_set_vexpand(GTK_WIDGET(self), TRUE);
     gtk_widget_set_focusable(GTK_WIDGET(self), TRUE);
@@ -322,8 +449,8 @@ void pmd85_display_set_aspect_mode(Pmd85Display *self, Pmd85AspectMode mode)
     gtk_widget_queue_draw(GTK_WIDGET(self));
 }
 
-void pmd85_display_set_smooth(Pmd85Display *self, gboolean smooth)
+void pmd85_display_set_scaling(Pmd85Display *self, Pmd85Scaling scaling)
 {
-    self->smooth = smooth;
+    self->scaling = scaling;
     gtk_widget_queue_draw(GTK_WIDGET(self));
 }
