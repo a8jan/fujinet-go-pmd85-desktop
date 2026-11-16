@@ -57,8 +57,10 @@ Next
   app's frontends/gnome/debugger window to it -- Console, Disassembly,
   Memory, Breakpoints (incl. IN/OUT), Watches, Trace, I/O (chips + the I/O
   log), Symbols, FujiNet tabs; a VRAM/attribute Video tab after that.
-- Debugger symbols: per-model monitor entry-point tables, from a ROM
-  disassembly (none built in yet, deliberately).
+- Debugger symbols: the 85-1 and 85-2 monitors have tables (2A uses the
+  85-2's); the 85-3 (E000h), Mato, Alfa and Consul monitors have none --
+  add when a commented listing turns up (tools/gpmd85/extract-monitor-
+  symbols.py takes the listings; regenerate with it).
 - Tape: a PTP deck in the host (IifTape::PrepareBlock/TapeCommand), flash
   load traps (ported, gated on a tape being loaded), import routing.
 - Gamepad (gamepad_sdl.c from the CoCo app) -> joystick 4004/482 bits.

@@ -16,8 +16,8 @@
 
 typedef struct pmd85symtab pmd85symtab;
 
-/* Seeds the built-in table (see symtab.c) and returns an empty-of-user-
- * symbols table ready to use. Never NULL except on out-of-memory. */
+/* An empty table (the engine sets the built-in part per monitor). Never
+ * NULL except on out-of-memory. */
 pmd85symtab *pmd85symtab_create(void);
 void pmd85symtab_destroy(pmd85symtab *t);
 
@@ -33,6 +33,11 @@ int pmd85symtab_load(pmd85symtab *t, const char *path);
  * symbol, so pmd85symtab_clear_user() drops it too. Returns 1 on success, 0 on
  * out-of-memory or a NULL table/name. */
 int pmd85symtab_add(pmd85symtab *t, uint16_t addr, const char *name);
+
+/* Replaces the built-in part (the monitor's symbols), keeping whatever was
+ * loaded or added. Returns 1. Thread-safe, like every call here. */
+int pmd85symtab_set_builtin(pmd85symtab *t, const uint16_t *addrs,
+                            const char *const *names, int n);
 
 /* Drops everything pmd85symtab_load added; the built-in table is untouched. */
 void pmd85symtab_clear_user(pmd85symtab *t);

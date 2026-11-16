@@ -202,7 +202,14 @@ int  pmd85debug_breakpoint_is_set(pmd85debug *d, uint16_t addr);
 void pmd85debug_breakpoint_clear_all(pmd85debug *d);
 int  pmd85debug_breakpoint_list(pmd85debug *d, uint16_t *out, int max);
 
-/* ---- symbols ----------------------------------------------------------- */
+/* ---- symbols -----------------------------------------------------------
+ * Built in: the running monitor's routines and work variables, from the
+ * commented PMD 85-1 and 85-2 ROM listings (core/debugger/monitor_symbols.c),
+ * picked on the first stop after the machine is (re)built and enabled only
+ * where the monitor's bytes match (so a 2A gets the 85-2 names except where
+ * its ROM differs). Loaded symbols go on top. */
+/* "monitor symbols: monit2.rom listing, 129 of 130 routines match, ..." */
+int  pmd85debug_monitor_symbols_info(pmd85debug *d, char *dst, int dstsz);
 /* Loads "NAME EQU #ADDR"/"NAME EQU $ADDR", z88dk .map ("NAME = $ADDR ;...")
  * or "NAME ADDR" lines on top of what is there. Returns the count, -1 if
  * the file could not be read. */

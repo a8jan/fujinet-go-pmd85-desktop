@@ -147,6 +147,17 @@ int main(void)
     ok("reason 'stopped at ....h'", !strncmp(text, "stopped at ", 11) && strlen(text) == 16 &&
                                     text[15] == 'h');
     ok("registers while paused", pmd85debug_regs_get(d, &r));
+    pmd85debug_monitor_symbols_info(d, text, sizeof text);
+    ok("2A: the 85-2 listing's symbols, all but HEADIN",
+       strstr(text, "monit2.rom listing, 129 of 130 routines") != NULL);
+    {
+        uint16_t a = 0;
+        char name[32] = "";
+        /* the 85-2 listing names 8C00h both TRANSFER and ROMIN */
+        ok("ROMIN is 8C00h", pmd85debug_symbol_find(d, "ROMIN", &a) && a == 0x8C00 &&
+                             pmd85debug_symbol_at(d, 0x8C00, name, sizeof name) &&
+                             (!strcmp(name, "ROMIN") || !strcmp(name, "TRANSFER")));
+    }
     ok("the monitor runs from ROM (#8000-#8FFF)", r.pc >= 0x8000 && r.pc <= 0x8FFF);
     {
         pmd85debug_region map[64];

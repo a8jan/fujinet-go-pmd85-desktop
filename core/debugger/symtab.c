@@ -4,11 +4,8 @@
  * Two sources merged into one flat table: a built-in list, and whatever a
  * user loads on top from their own assembled program.
  *
- * The built-in list is empty for now on purpose. The PMD 85 monitors'
- * entry points differ between the models (the 2A's ROM-module transfer at
- * 8C00h is not the 1's), GPMD85Emulator ships no names, and a wrong address
- * in a debugger is worse than a missing one; per-model tables can come from
- * a ROM disassembly when one is in hand.
+ * The built-in part is the running monitor's symbols, swapped in by the
+ * engine (pmd85symtab_set_builtin) from core/debugger/monitor_symbols.c.
  *
  * User symbols load as "NAME EQU #ADDR" / "NAME EQU $ADDR" (assembler
  * listings and symbol dumps), z88dk's .map ("NAME = $ADDR ; ..."), or a
@@ -22,6 +19,7 @@
 #include "symtab.h"
 
 #include <ctype.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -34,16 +32,17 @@ typedef struct {
 } sym_entry;
 
 struct pmd85symtab {
+    /* the monitor's table is swapped in on the emulator thread when the
+     * machine stops, while a window may be reading: one lock for all */
+    pthread_mutex_t mtx;
     sym_entry *entries;
     int count;
     int cap;
     int builtin_count; /* entries[0..builtin_count) survive clear_user */
 };
 
-/* none yet (see the top of the file); the sentinel keeps the array legal */
-static const struct { uint16_t addr; const char *name; } k_builtin[] = {
-    { 0, NULL },
-};
+static void lock(const pmd85symtab *t) { pthread_mutex_lock(&((pmd85symtab *)t)->mtx); }
+static void unlock(const pmd85symtab *t) { pthread_mutex_unlock(&((pmd85symtab *)t)->mtx); }
 
 static int ensure_cap(pmd85symtab *t, int need)
 {
@@ -72,18 +71,15 @@ static int append(pmd85symtab *t, uint16_t addr, const char *name)
 pmd85symtab *pmd85symtab_create(void)
 {
     pmd85symtab *t = calloc(1, sizeof(*t));
-    size_t i;
     if (!t) return NULL;
-    for (i = 0; i < sizeof(k_builtin) / sizeof(k_builtin[0]); i++)
-        if (k_builtin[i].name)
-            append(t, k_builtin[i].addr, k_builtin[i].name);
-    t->builtin_count = t->count;
+    pthread_mutex_init(&t->mtx, NULL);
     return t;
 }
 
 void pmd85symtab_destroy(pmd85symtab *t)
 {
     if (!t) return;
+    pthread_mutex_destroy(&t->mtx);
     free(t->entries);
     free(t);
 }
@@ -91,7 +87,36 @@ void pmd85symtab_destroy(pmd85symtab *t)
 void pmd85symtab_clear_user(pmd85symtab *t)
 {
     if (!t) return;
+    lock(t);
     t->count = t->builtin_count;
+    unlock(t);
+}
+
+int pmd85symtab_set_builtin(pmd85symtab *t, const uint16_t *addrs,
+                            const char *const *names, int n)
+{
+    sym_entry *user;
+    int nuser, i;
+
+    if (!t) return 0;
+    lock(t);
+    nuser = t->count - t->builtin_count;
+    user = nuser > 0 ? malloc((size_t)nuser * sizeof *user) : NULL;
+    if (nuser > 0 && !user) {
+        unlock(t);
+        return 0;
+    }
+    if (nuser > 0)
+        memcpy(user, t->entries + t->builtin_count, (size_t)nuser * sizeof *user);
+    t->count = 0;
+    for (i = 0; i < n; i++)
+        append(t, addrs[i], names[i]);
+    t->builtin_count = t->count;
+    for (i = 0; i < nuser; i++)
+        append(t, user[i].addr, user[i].name);
+    free(user);
+    unlock(t);
+    return 1;
 }
 
 /* Parses one line into (name, addr). Accepts "NAME EQU $ADDR" (lwasm's
@@ -154,9 +179,13 @@ static int parse_line(const char *line, char *name_out, uint16_t *addr_out)
 
 int pmd85symtab_add(pmd85symtab *t, uint16_t addr, const char *name)
 {
+    int ok;
     if (!t || !name)
         return 0;
-    return append(t, addr, name);
+    lock(t);
+    ok = append(t, addr, name);
+    unlock(t);
+    return ok;
 }
 
 int pmd85symtab_load(pmd85symtab *t, const char *path)
@@ -169,8 +198,11 @@ int pmd85symtab_load(pmd85symtab *t, const char *path)
     while (fgets(line, sizeof(line), f)) {
         char name[SYM_NAME_MAX];
         uint16_t addr;
-        if (parse_line(line, name, &addr) && append(t, addr, name))
-            loaded++;
+        if (parse_line(line, name, &addr)) {
+            lock(t);
+            loaded += append(t, addr, name);
+            unlock(t);
+        }
     }
     fclose(f);
     return loaded;
@@ -181,12 +213,15 @@ int pmd85symtab_lookup_addr(const pmd85symtab *t, uint16_t addr, char *dst,
 {
     int i;
     if (!t) return 0;
+    lock(t);
     for (i = t->count - 1; i >= 0; i--) {
         if (t->entries[i].addr == addr) {
             snprintf(dst, (size_t)dstsz, "%s", t->entries[i].name);
+            unlock(t);
             return 1;
         }
     }
+    unlock(t);
     return 0;
 }
 
@@ -195,30 +230,44 @@ int pmd85symtab_lookup_name(const pmd85symtab *t, const char *name,
 {
     int i;
     if (!t) return 0;
+    lock(t);
     for (i = t->count - 1; i >= 0; i--) {
         if (strcmp(t->entries[i].name, name) == 0) {
             *addr_out = t->entries[i].addr;
+            unlock(t);
             return 1;
         }
     }
+    unlock(t);
     return 0;
 }
 
 int pmd85symtab_count(const pmd85symtab *t)
 {
-    return t ? t->count : 0;
+    int n;
+    if (!t) return 0;
+    lock(t);
+    n = t->count;
+    unlock(t);
+    return n;
 }
 
 int pmd85symtab_get(const pmd85symtab *t, int index, uint16_t *addr, char *name,
                    int namesz, int *builtin)
 {
-    if (!t || index < 0 || index >= t->count)
+    if (!t || index < 0)
         return 0;
+    lock(t);
+    if (index >= t->count) {
+        unlock(t);
+        return 0;
+    }
     if (addr)
         *addr = t->entries[index].addr;
     if (name && namesz > 0)
         snprintf(name, (size_t)namesz, "%s", t->entries[index].name);
     if (builtin)
         *builtin = index < t->builtin_count;
+    unlock(t);
     return 1;
 }

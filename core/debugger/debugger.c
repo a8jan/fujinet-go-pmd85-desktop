@@ -24,6 +24,7 @@
 #include "debugger_internal.h"
 #include "dwtrace.h"
 #include "expr.h"
+#include "monitor_symbols.h"
 #include "pmd85_host.h"
 #include "pmd85_host_internal.h"
 #include "session_internal.h"
@@ -107,6 +108,8 @@ struct pmd85debug {
     int io_head, io_count;
 
     pmd85symtab *symtab;
+    void *monsym_machine;     /* the machine the monitor symbols were picked for */
+    char  monsym_info[128];   /* what was picked, for the prompt and a window */
 
     /* The FujiNet tab's DriveWire trace, fed from the Becker port. */
     pthread_mutex_t trace_mtx;
@@ -499,10 +502,90 @@ static void trace_record(pmd85debug *d, const pmd85host_cpu *c)
     pthread_mutex_unlock(&d->ring_mtx);
 }
 
+/* ---- the monitor's symbols -------------------------------------------------
+ * Every table in monitor_symbols.c was verified against one ROM image; the
+ * running monitor may be that one, a variant (monit2A differs from monit2
+ * only in HEADIN; monit1u from monit1 in two places) or something else. A
+ * routine's symbol is enabled only where the bytes at it match, and a table
+ * is used only when most of its routines do. Emulator thread (parked). */
+static int monsym_matches(const pmd85_monsym *m)
+{
+    int k;
+    for (k = 0; k < m->nchk && peek((uint16_t)(m->addr + k)) == m->chk[k]; k++) ;
+    return k == m->nchk;
+}
+
+static void select_monitor_symbols(pmd85debug *d)
+{
+    int best = -1, best_hits = 0, best_code = 0, t, i, n = 0, nvar = 0;
+    uint16_t *addrs;
+    const char **names;
+    const pmd85_montable *tab;
+
+    for (t = 0; t < pmd85_monitor_table_count; t++) {
+        int code = 0, hits = 0;
+        tab = &pmd85_monitor_tables[t];
+        for (i = 0; i < tab->count; i++) {
+            if (!tab->syms[i].nchk)
+                continue;
+            code++;
+            hits += monsym_matches(&tab->syms[i]);
+        }
+        if (hits * 2 > code && hits > best_hits) {
+            best = t;
+            best_hits = hits;
+            best_code = code;
+        }
+    }
+    if (best < 0) {
+        pmd85symtab_set_builtin(d->symtab, NULL, NULL, 0);
+        snprintf(d->monsym_info, sizeof d->monsym_info,
+                 "monitor symbols: none (no listing matches this monitor)");
+        return;
+    }
+    tab = &pmd85_monitor_tables[best];
+    addrs = malloc((size_t)tab->count * sizeof *addrs);
+    names = malloc((size_t)tab->count * sizeof *names);
+    if (!addrs || !names) {
+        free(addrs);
+        free(names);
+        return;
+    }
+    for (i = 0; i < tab->count; i++) {
+        if (!monsym_matches(&tab->syms[i]))
+            continue;
+        nvar += !tab->syms[i].nchk;
+        addrs[n] = tab->syms[i].addr;
+        names[n++] = tab->syms[i].name;
+    }
+    pmd85symtab_set_builtin(d->symtab, addrs, names, n);
+    snprintf(d->monsym_info, sizeof d->monsym_info,
+             "monitor symbols: %s listing, %d of %d routines match, %d variables",
+             tab->rom, best_hits, best_code, nvar);
+    free(addrs);
+    free(names);
+}
+
+int pmd85debug_monitor_symbols_info(pmd85debug *d, char *dst, int dstsz)
+{
+    int n;
+    if (!d || !dst || dstsz <= 0)
+        return 0;
+    pthread_mutex_lock(&d->mtx);
+    n = snprintf(dst, (size_t)dstsz, "%s",
+                 d->monsym_info[0] ? d->monsym_info : "monitor symbols: not yet (stop once)");
+    pthread_mutex_unlock(&d->mtx);
+    return n < dstsz ? n : dstsz - 1;
+}
+
 /* ---- parking -------------------------------------------------------------
  * Caller holds d->mtx on the emulator thread, inside the hook. */
 static void park_locked(pmd85debug *d, const pmd85host_cpu *c, const char *reason)
 {
+    if (d->machine_seen != d->monsym_machine) {
+        select_monitor_symbols(d);
+        d->monsym_machine = d->machine_seen;
+    }
     regs_from_cpu(c, &d->regs);
     d->regs_valid = 1;
     snprintf(d->reason, sizeof(d->reason), "%s", reason);
@@ -794,6 +877,7 @@ static void session_begin(pmd85debug *d)
     d->pend_n = 0;
     d->pend_io = 0;
     d->machine_seen = NULL;
+    d->monsym_machine = NULL;
     d->nmap = 0;
     pthread_mutex_unlock(&d->mtx);
     bump(d);

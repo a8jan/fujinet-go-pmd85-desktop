@@ -35,6 +35,22 @@ user's ROM folder on first start (a user's own file of the same name wins):
   carrying FujiNet's `fujinet-config` (GPL-3.0). Provenance and checksum in
   `tools/gpmd85/roms/README.md`.
 
+## Monitor symbols
+
+`core/debugger/monitor_symbols.c` holds label names and addresses only (no
+comments, no code) of the PMD 85-1 and 85-2 system monitors, extracted by
+`tools/gpmd85/extract-monitor-symbols.py` from two publicly available
+commented ROM listings, and each verified against the ROM images above:
+
+- *Monitor PMD-85-1* (HTML), whose names follow the ÚVSSM manual "Popis
+  základního programového vybavení mikropočítače PMD-85";
+- *Komentovaný výpis monitoru PMD-85-2* (PDF, MACRO-80 listing) by ing. Vít
+  Libovický and Jiří Olmer.
+
+Their licence is not stated. Only the names are used (the identifiers the
+original authors gave the routines, as one would cite them); a rights holder
+who objects should open an issue and the table will be removed.
+
 ## Deliberately not used
 
 - GPMD85Emulator's Dear ImGui user interface (`gui/`), its SDL2/OpenGL screen

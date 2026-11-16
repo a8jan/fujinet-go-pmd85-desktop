@@ -608,8 +608,10 @@ int pmd85debug_command(pmd85debug *d, const char *command, char *dst, int dstsz)
             for (pos = 0; pos < found; pos++)
                 out(&buf, "%s\n", pmd85hx(d, hits[pos], 4));
     } else if (!strcmp(cmd, "symbols") || !strcmp(cmd, "sym")) {
-        char *filter = rest_of(p);
+        char *filter = rest_of(p), info[160];
         int picks[400], count, pos;
+        pmd85debug_monitor_symbols_info(d, info, sizeof info);
+        out(&buf, "%s\n", info);
         count = pmd85debug_symbols_filter(d, filter, picks, 400);
         for (pos = 0; pos < count; pos++) {
             uint16_t addr;

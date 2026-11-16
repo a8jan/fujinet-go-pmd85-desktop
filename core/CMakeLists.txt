@@ -91,6 +91,7 @@ add_library(pmd85session STATIC
   debugger/i8080dasm.c
   debugger/expr.c
   debugger/symtab.c
+  debugger/monitor_symbols.c
   debugger/memtools.c
   debugger/dwtrace.c
   debugger/prompt.c
