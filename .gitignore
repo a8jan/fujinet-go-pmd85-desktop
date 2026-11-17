@@ -21,3 +21,4 @@ tools/fujinet/work/
 .flatpak-builder/
 build-flatpak*/
 repo/
+__pycache__/

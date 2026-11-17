@@ -70,7 +70,7 @@ Next
 - K11 (F12 is the debugger key): offer it another way (on-screen key or a
   binding).
 - macOS (AppKit) frontend; then KDE and Windows.
-- CI (linux, macos, windows, flatpak), flatpak manifests, icons, metainfo
+- CI (linux, macos, windows, flatpak), flatpak manifests, metainfo,
   screenshots, README, release.
 - Upstream: tell the family's display-widget author (Thomas Cherryhomes,
   fujinet-go-coco/adam/apple2/atari800-desktop share frontends/gnome/

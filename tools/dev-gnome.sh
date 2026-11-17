@@ -6,6 +6,8 @@
 #   tools/dev-gnome.sh build   # configure (first time) + build build-gnome/
 #   tools/dev-gnome.sh run     # run the app
 #   tools/dev-gnome.sh shell   # a shell in the SDK, same mounts
+#   tools/dev-gnome.sh install-desktop   # launcher entry + icons into
+#                                        # ~/.local/share, starting `run`
 #
 # Run from anywhere; paths resolve against the repository. The FujiNet
 # library comes from the host build (tools/fujinet/work/out/), see README.
@@ -70,8 +72,29 @@ run)
 shell)
     sdk --share=network --cwd="$REPO" --command=bash "$SDK"
     ;;
+install-desktop)
+    # Desktops (GNOME Shell, KDE, COSMIC) find a window's name and icon by
+    # its app id in the installed launcher entries; a build-tree run has
+    # none, hence a gear icon and the id's last word as the name. This
+    # installs the entry (starting this script's `run`) and the icons.
+    data=${XDG_DATA_HOME:-$HOME/.local/share}
+    mkdir -p "$data/applications"
+    sed "s|^Exec=.*|Exec=$REPO/tools/dev-gnome.sh run|" \
+        "$REPO/frontends/gnome/data/$APP_ID.desktop" \
+        > "$data/applications/$APP_ID.desktop"
+    for d in "$REPO"/data/icons/hicolor/*/apps; do
+        size=$(basename "$(dirname "$d")")
+        mkdir -p "$data/icons/hicolor/$size/apps"
+        cp "$d/fujinet-go-pmd85.png" "$data/icons/hicolor/$size/apps/$APP_ID.png"
+    done
+    command -v update-desktop-database >/dev/null &&
+        update-desktop-database "$data/applications" || true
+    command -v gtk-update-icon-cache >/dev/null &&
+        gtk-update-icon-cache -q -t "$data/icons/hicolor" || true
+    echo "installed $data/applications/$APP_ID.desktop and icons"
+    ;;
 *)
-    sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
     exit 2
     ;;
 esac

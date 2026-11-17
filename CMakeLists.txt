@@ -65,3 +65,26 @@ endif()
 if(FRONTEND STREQUAL "windows" OR (FRONTEND STREQUAL "all" AND WIN32))
   add_frontend(windows)
 endif()
+
+# Application icons (the FujiNet Go mark in PMD 85 colours, rendered by
+# tools/icons/make-icons.py). Desktop environments look the icon up by the
+# desktop-entry id, so the art is installed under each frontend's id, at
+# every hicolor size. Only for frontends actually built here.
+set(PMD85_ICON_SIZES 16 24 32 48 64 128 192 256 512)
+set(PMD85_ICON_TARGETS_AND_IDS
+  fujinet-go-pmd85-gnome online.fujinet.go.pmd85.gnome
+  fujinet-go-pmd85-kde online.fujinet.go.pmd85.kde)
+list(LENGTH PMD85_ICON_TARGETS_AND_IDS _pmd85_icon_n)
+math(EXPR _pmd85_icon_last "${_pmd85_icon_n} - 1")
+foreach(_i RANGE 0 ${_pmd85_icon_last} 2)
+  list(GET PMD85_ICON_TARGETS_AND_IDS ${_i} _target)
+  math(EXPR _j "${_i} + 1")
+  list(GET PMD85_ICON_TARGETS_AND_IDS ${_j} _id)
+  if(TARGET ${_target})
+    foreach(_size IN LISTS PMD85_ICON_SIZES)
+      install(FILES data/icons/hicolor/${_size}x${_size}/apps/fujinet-go-pmd85.png
+              DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/${_size}x${_size}/apps
+              RENAME ${_id}.png)
+    endforeach()
+  endif()
+endforeach()

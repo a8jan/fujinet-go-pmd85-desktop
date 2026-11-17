@@ -51,6 +51,15 @@ Their licence is not stated. Only the names are used (the identifiers the
 original authors gave the routines, as one would cite them); a rights holder
 who objects should open an issue and the table will be removed.
 
+## Icon and name
+
+The icon is the FujiNet Go family mark (the same artwork as the sibling
+apps') on the PMD 85 case's dark grey, its centre disc in the blue of the
+function keys (`tools/icons/make-icons.py`; only the two colours were sampled from a 3D
+render of the machine, nothing of the render is included). "PMD 85" and
+"Tesla" name the machines emulated and their maker; the project is not
+affiliated with or endorsed by any holder of those names.
+
 ## Deliberately not used
 
 - GPMD85Emulator's Dear ImGui user interface (`gui/`), its SDL2/OpenGL screen
