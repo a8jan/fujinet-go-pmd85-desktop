@@ -129,6 +129,21 @@ int main(void)
         if (getenv("PMD85_DUMP_LOG")) fwrite(log, 1, (size_t)n, stdout);
     }
 
+    /* FujiNet alone restarted under a running PMD: back up, and the Becker
+     * port links again by itself */
+    {
+        int relinked = 0;
+        CHECK(pmd85session_fujinet_restart(s) == 0, "restart: %s",
+              pmd85session_last_error(s));
+        CHECK(pmd85session_fujinet_running(s), "FujiNet not running after restart");
+        for (int i = 0; i < 100 && !relinked; i++) {
+            relinked = pmd85session_fujinet_link(s);
+            if (!relinked) sleep_ms(100);
+        }
+        CHECK(relinked, "the Becker port did not link again after the restart");
+        CHECK(pmd85session_is_running(s), "the PMD stopped with FujiNet");
+    }
+
     pmd85session_free(s);
     test_rmtree(dir);
     if (failures) {

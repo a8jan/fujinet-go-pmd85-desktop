@@ -814,6 +814,26 @@ const char *pmd85session_becker_endpoint(const pmd85session *s)
     return s->becker_endpoint[0] ? s->becker_endpoint : "127.0.0.1:65505";
 }
 
+int pmd85session_fujinet_restart(pmd85session *s)
+{
+    int rc;
+    if (!s) return -1;
+    pthread_mutex_lock(&s->lifecycle_mtx);
+    if (!s->running || s->fujinet_external || !s->opts.enable_fujinet) {
+        session_set_error(s, s->fujinet_external
+                          ? "FujiNet is external: restart it where it runs"
+                          : "The built-in FujiNet is off (Preferences)");
+        pthread_mutex_unlock(&s->lifecycle_mtx);
+        return -1;
+    }
+    fujinet_stop(s);
+    rc = fujinet_start(s);
+    if (rc == 0)
+        fujinet_wait_for_becker(s, 10000);
+    pthread_mutex_unlock(&s->lifecycle_mtx);
+    return rc;
+}
+
 int pmd85session_fujinet_link(const pmd85session *s)
 {
     return s && s->running && pmd85host_becker_link_up();

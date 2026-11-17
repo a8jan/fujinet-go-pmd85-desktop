@@ -235,6 +235,10 @@ int  pmd85session_parse_hostport(const char *text, char *host, int hostsz,
                                  int *port);
 int  pmd85session_fujinet_running(const pmd85session *s);
 int  pmd85session_fujinet_external(const pmd85session *s);
+/* Stop and start the built-in FujiNet alone (the PMD keeps running; the
+ * Becker port reconnects by itself) and wait for its listener. Blocks for
+ * a second or so. 0, or -1 with pmd85session_last_error(). */
+int  pmd85session_fujinet_restart(pmd85session *s);
 /* 1 while the Becker port is connected to FujiNet. */
 int  pmd85session_fujinet_link(const pmd85session *s);
 const char *pmd85session_becker_endpoint(const pmd85session *s);

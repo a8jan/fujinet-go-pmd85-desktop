@@ -48,6 +48,9 @@ Done (2026-11-16, first pass)
   and 2A auto-run it, elsewhere it is started from the monitor.
 - ROM module "Module file": the user's own .rmm (32 KB ROM pack) or .mrm
   (MegaModule) image (setting module_file); menu and Preferences chooser.
+- FujiNet menu as in the Atari 800 app: FujiNet Web UI, Console Log,
+  Restart FujiNet (FujiNet alone, the PMD keeps running), Import to SD
+  Card... (several at once), Open SD Folder.
 
 Next
 ----

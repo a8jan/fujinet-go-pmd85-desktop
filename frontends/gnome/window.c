@@ -389,65 +389,130 @@ static void action_fullscreen(GSimpleAction *action, GVariant *param,
         gtk_window_fullscreen(w);
 }
 
-static void import_done(GObject *source, GAsyncResult *result,
-                        gpointer user_data)
+/* ---- FujiNet's SD card ---------------------------------------------------- */
+
+static void import_sd_done(GObject *source, GAsyncResult *result, gpointer user_data)
 {
     Pmd85Window *self = PMD85_WINDOW(user_data);
-    g_autoptr(GFile) file =
-        gtk_file_dialog_open_finish(GTK_FILE_DIALOG(source), result, NULL);
-    char dest[1024];
-    g_autofree char *path = NULL;
+    g_autoptr(GListModel) files =
+        gtk_file_dialog_open_multiple_finish(GTK_FILE_DIALOG(source), result, NULL);
     g_autofree char *msg = NULL;
-    g_autofree char *lower = NULL;
-    const char *base;
+    char dest[1024], last[256] = "";
+    int ok = 0, failed = 0;
 
-    if (!file)
+    if (!files)
         return;
-    path = g_file_get_path(file);
-    if (!path)
-        return;
-    if (pmd85session_import_media(self->session, path, dest, sizeof(dest)) != 0) {
-        pmd85_window_toast(self, pmd85session_last_error(self->session));
-        return;
+    for (guint i = 0; i < g_list_model_get_n_items(files); i++) {
+        g_autoptr(GFile) f = g_list_model_get_item(files, i);
+        g_autofree char *path = g_file_get_path(f);
+        if (path && pmd85session_import_media(self->session, path, dest, sizeof dest) == 0) {
+            const char *base = strrchr(dest, '/') ? strrchr(dest, '/') + 1 : dest;
+            g_strlcpy(last, base, sizeof last);
+            ok++;
+        } else {
+            failed++;
+        }
     }
-    base = strrchr(dest, '/') ? strrchr(dest, '/') + 1 : dest;
-    lower = g_ascii_strdown(base, -1);
-    if (g_str_has_suffix(lower, ".rom"))
-        msg = g_strdup_printf("Copied %s to the ROM folder", base);
+    if (failed && !ok)
+        msg = g_strdup(pmd85session_last_error(self->session));
+    else if (failed)
+        msg = g_strdup_printf("%d copied to FujiNet's SD card, %d could not be", ok, failed);
+    else if (ok == 1)
+        msg = g_strdup_printf("Copied %s to FujiNet's SD card: mount it from CONFIG", last);
     else
-        msg = g_strdup_printf("Copied to FujiNet SD: %s. Mount it from FujiNet "
-                              "CONFIG.", base);
+        msg = g_strdup_printf("%d copied to FujiNet's SD card: mount them from CONFIG", ok);
     pmd85_window_toast(self, msg);
 }
 
-static void action_import_media(GSimpleAction *action, GVariant *param,
-                                gpointer user_data)
+static void action_import_sd(GSimpleAction *action, GVariant *param, gpointer user_data)
 {
     Pmd85Window *self = PMD85_WINDOW(user_data);
     GtkFileDialog *dialog = gtk_file_dialog_new();
     GListStore *filters = g_list_store_new(GTK_TYPE_FILE_FILTER);
     GtkFileFilter *media = gtk_file_filter_new();
     GtkFileFilter *all = gtk_file_filter_new();
-    static const char *const exts[] = { "rmm", "mrm", "p32", "ptp", "pmd",
-                                        "rom", NULL };
-    int i;
+    static const char *const exts[] = { "rmm", "mrm", "p32", "ptp", "pmd", NULL };
     (void)action;
     (void)param;
 
     gtk_file_filter_set_name(media, "PMD 85 media (ROM modules, disks, tapes)");
-    for (i = 0; exts[i]; i++)
+    for (int i = 0; exts[i]; i++)
         gtk_file_filter_add_suffix(media, exts[i]);
     gtk_file_filter_set_name(all, "All files");
     gtk_file_filter_add_pattern(all, "*");
     g_list_store_append(filters, media);
     g_list_store_append(filters, all);
-    gtk_file_dialog_set_title(dialog, "Import Media");
+    gtk_file_dialog_set_title(dialog, "Import to FujiNet's SD Card");
     gtk_file_dialog_set_filters(dialog, G_LIST_MODEL(filters));
-    gtk_file_dialog_open(dialog, GTK_WINDOW(self), NULL, import_done, self);
+    gtk_file_dialog_open_multiple(dialog, GTK_WINDOW(self), NULL, import_sd_done, self);
     g_object_unref(media);
     g_object_unref(all);
     g_object_unref(filters);
     g_object_unref(dialog);
+}
+
+static void action_sd_folder(GSimpleAction *action, GVariant *param, gpointer user_data)
+{
+    Pmd85Window *self = PMD85_WINDOW(user_data);
+    const char *path = pmd85session_sd_path(self->session);
+    g_autoptr(GFile) dir = NULL;
+    GtkFileLauncher *l;
+    (void)action;
+    (void)param;
+    if (!path || !*path) {
+        pmd85_window_toast(self, "No FujiNet SD folder");
+        return;
+    }
+    g_mkdir_with_parents(path, 0755);
+    dir = g_file_new_for_path(path);
+    l = gtk_file_launcher_new(dir);
+    gtk_file_launcher_launch(l, GTK_WINDOW(self), NULL, NULL, NULL);
+    g_object_unref(l);
+}
+
+/* The restart waits for FujiNet's listener (a second or so): off the UI
+ * thread. */
+static void fujinet_restart_thread(GTask *task, gpointer source, gpointer data,
+                                   GCancellable *cancel)
+{
+    Pmd85Window *self = PMD85_WINDOW(source);
+    (void)data;
+    (void)cancel;
+    g_task_return_int(task, pmd85session_fujinet_restart(self->session));
+}
+
+static void fujinet_restart_done(GObject *source, GAsyncResult *result, gpointer data)
+{
+    Pmd85Window *self = PMD85_WINDOW(source);
+    GAction *a = g_action_map_lookup_action(G_ACTION_MAP(self), "fujinet-restart");
+    (void)data;
+    if (a)
+        g_simple_action_set_enabled(G_SIMPLE_ACTION(a), TRUE);
+    if (g_task_propagate_int(G_TASK(result), NULL) == 0)
+        pmd85_window_toast(self, "FujiNet restarted");
+    else
+        pmd85_window_toast(self, pmd85session_last_error(self->session));
+}
+
+static void action_fujinet_restart(GSimpleAction *action, GVariant *param,
+                                   gpointer user_data)
+{
+    Pmd85Window *self = PMD85_WINDOW(user_data);
+    GTask *task;
+    (void)param;
+    if (pmd85session_fujinet_external(self->session)) {
+        pmd85_window_toast(self, "FujiNet is external: restart it where it runs");
+        return;
+    }
+    if (!pmd85session_get_int(self->session, "enable_fujinet", 1)) {
+        pmd85_window_toast(self, "The built-in FujiNet is off (Preferences)");
+        return;
+    }
+    g_simple_action_set_enabled(action, FALSE);
+    pmd85_window_toast(self, "Restarting FujiNet\xe2\x80\xa6");
+    task = g_task_new(self, NULL, fujinet_restart_done, NULL);
+    g_task_run_in_thread(task, fujinet_restart_thread);
+    g_object_unref(task);
 }
 
 static void action_fujinet_config(GSimpleAction *action, GVariant *param,
@@ -528,7 +593,6 @@ static GMenu *build_menu(void)
     GMenu *menu = g_menu_new();
     GMenu *machine = g_menu_new();
     GMenu *view = g_menu_new();
-    GMenu *media = g_menu_new();
     GMenu *fujinet = g_menu_new();
     GMenu *tail = g_menu_new();
     GMenu *sub;
@@ -555,11 +619,11 @@ static GMenu *build_menu(void)
     g_menu_append(view, "Fullscreen (Ctrl+Shift+F)", "win.fullscreen");
     g_menu_append_section(menu, "View", G_MENU_MODEL(view));
 
-    g_menu_append(media, "Import Media\xe2\x80\xa6", "win.import-media");
-    g_menu_append_section(menu, "Media", G_MENU_MODEL(media));
-
-    g_menu_append(fujinet, "FujiNet Configuration\xe2\x80\xa6", "win.fujinet-config");
-    g_menu_append(fujinet, "FujiNet Console Log\xe2\x80\xa6", "win.fujinet-log");
+    g_menu_append(fujinet, "FujiNet Web UI", "win.fujinet-config");
+    g_menu_append(fujinet, "Console Log", "win.fujinet-log");
+    g_menu_append(fujinet, "Restart FujiNet", "win.fujinet-restart");
+    g_menu_append(fujinet, "Import to SD Card\xe2\x80\xa6", "win.import-sd");
+    g_menu_append(fujinet, "Open SD Folder", "win.sd-folder");
     g_menu_append_section(menu, "FujiNet", G_MENU_MODEL(fujinet));
 
     g_menu_append(tail, "Debugger (F12)", "win.debugger");
@@ -569,7 +633,6 @@ static GMenu *build_menu(void)
 
     g_object_unref(machine);
     g_object_unref(view);
-    g_object_unref(media);
     g_object_unref(fujinet);
     g_object_unref(tail);
     return menu;
@@ -580,7 +643,9 @@ static const GActionEntry win_actions[] = {
     {.name = "cold", .activate = action_cold},
     {.name = "debugger", .activate = action_debugger},
     {.name = "fullscreen", .activate = action_fullscreen},
-    {.name = "import-media", .activate = action_import_media},
+    {.name = "import-sd", .activate = action_import_sd},
+    {.name = "sd-folder", .activate = action_sd_folder},
+    {.name = "fujinet-restart", .activate = action_fujinet_restart},
     {.name = "module-file", .activate = action_module_file},
     {.name = "fujinet-config", .activate = action_fujinet_config},
     {.name = "fujinet-log", .activate = action_fujinet_log},
