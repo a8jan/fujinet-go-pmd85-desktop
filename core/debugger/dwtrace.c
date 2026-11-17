@@ -57,8 +57,10 @@ struct dwtrace {
     uint8_t tx[XBUF], rx[XBUF];
     int ntx, nrx;      /* every byte, even past XBUF */
     uint8_t tx_last[2];
-    uint8_t wire[64];  /* the first bytes, in the order they crossed */
+    uint8_t wire[PMD85_FUJI_DATA];  /* the kept bytes, in the order they crossed */
+    uint8_t wire_out[PMD85_FUJI_DATA / 8];   /* which of them went to FujiNet */
     int nwire;
+    int nwire_dir[2];  /* kept bytes from FujiNet [0] and to it [1] */
     uint64_t cur_serial;
 
     uint64_t bytes[2], exchanges;
@@ -295,7 +297,9 @@ static void describe(const dwtrace *t, pmd85_fuji_packet *p)
         p->command = t->tx[2];
     p->length = t->nrx > 0 ? t->nrx : -1;
     p->nbytes = t->ntx + t->nrx;
+    p->nkept = t->nwire;
     memcpy(p->data, t->wire, (size_t)t->nwire);
+    memcpy(p->out_bits, t->wire_out, sizeof p->out_bits);
     p->repeat = 1;
     render(t, p->text, sizeof p->text);
 }
@@ -322,8 +326,9 @@ static uint64_t hash_of(const dwtrace *t)
 
 static int same(const slot *a, const slot *b)
 {
-    const int n = a->p.nbytes < 64 ? a->p.nbytes : 64;
+    const int n = a->p.nkept;
     return a->hash == b->hash && a->p.nbytes == b->p.nbytes &&
+           a->p.nkept == b->p.nkept &&
            a->p.device == b->p.device && a->p.to_host == b->p.to_host &&
            a->p.length == b->p.length &&
            memcmp(a->p.data, b->p.data, (size_t)n) == 0 &&
@@ -371,12 +376,23 @@ static int join(dwtrace *t, const slot *resp)
             c->repeat > 1)
             return 0;
 
-        for (i = 0; i < r->length && c->nbytes + i < 64 && off + i < 64; i++)
-            c->data[c->nbytes + i] = r->data[off + i];
+        {
+            /* the reply bytes go in as the command's IN bytes, up to the
+             * per-direction limit (the command has none of its own yet) */
+            int in = 0;
+            for (i = 0; i < c->nkept; i++)
+                in += !((c->out_bits[i / 8] >> (i % 8)) & 1);
+            for (i = 0; i < r->length && off + i < r->nkept &&
+                        in < PMD85_FUJI_KEEP && c->nkept < PMD85_FUJI_DATA; i++, in++) {
+                const int at_ = c->nkept++;
+                c->data[at_] = r->data[off + i];
+                c->out_bits[at_ / 8] &= (uint8_t)~(1u << (at_ % 8));   /* a reply byte */
+            }
+        }
         c->nbytes += r->length;
         c->length = r->length;
         add_reply(c->text, sizeof c->text, r->length,
-                  off < 64 ? r->data[off] : 0);
+                  off < r->nkept ? r->data[off] : 0);
         s->hash = (s->hash ^ resp->hash) * 1099511628211ULL;
         /* New serials from here on, so a UI watching the last one redraws. */
         for (i = k; i < t->count; i++)
@@ -416,6 +432,8 @@ static void begin(dwtrace *t, int dir)
     t->cut = 0;
     t->ntx = t->nrx = 0;
     t->nwire = 0;
+    t->nwire_dir[0] = t->nwire_dir[1] = 0;
+    memset(t->wire_out, 0, sizeof t->wire_out);
     t->tx_last[0] = t->tx_last[1] = 0;
 }
 
@@ -432,8 +450,12 @@ static void append(dwtrace *t, int dir, uint8_t b)
             t->rx[t->nrx] = b;
         t->nrx++;
     }
-    if (t->nwire < (int)sizeof t->wire)
+    if (t->nwire_dir[!!dir] < PMD85_FUJI_KEEP && t->nwire < (int)sizeof t->wire) {
+        if (dir)
+            t->wire_out[t->nwire / 8] |= (uint8_t)(1u << (t->nwire % 8));
         t->wire[t->nwire++] = b;
+        t->nwire_dir[!!dir]++;
+    }
     t->seg_have++;
     t->cur_serial = ++t->serial;
 }
@@ -447,7 +469,7 @@ static int split_ready(dwtrace *t)
         return 0;
     t->ntx -= 2;
     if (t->nwire > t->ntx)
-        t->nwire = t->ntx;
+        t->nwire = t->nwire_dir[1] = t->ntx;   /* nothing came back: all out */
     finish(t);
     begin(t, 1);
     append(t, 1, OP_FUJI);

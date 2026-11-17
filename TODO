@@ -53,14 +53,16 @@ Next
   the 85-1 (JOB 000001100000) and 85-3 (JUMP FFF0, or the 85-2
   compatibility switch, which auto-runs it) are confirmed, the 85-2 and 2A
   boot it by themselves; the Alfas get a generic line -- find their command.
-- Debugger, GNOME window (F12): the engine is done (below); port the CoCo
-  app's frontends/gnome/debugger window to it -- Console, Disassembly,
-  Memory, Breakpoints (incl. IN/OUT), Watches, Trace, I/O (chips + the I/O
-  log), Symbols, FujiNet tabs; a VRAM/attribute Video tab after that.
+- Debugger window, after use: a Video tab (VRAM, the attribute bits, the
+  colour profile); a help page; per-tab polish found while using it.
 - Debugger symbols: the 85-1 and 85-2 monitors have tables (2A uses the
   85-2's); the 85-3 (E000h), Mato, Alfa and Consul monitors have none --
   add when a commented listing turns up (tools/gpmd85/extract-monitor-
   symbols.py takes the listings; regenerate with it).
+- (done) GNOME debugger window: F12 / menu, from the CoCo app's window:
+  Console, Disassembly, Memory, Breakpoints (incl. IN/OUT), Watches, I/O
+  (map, chips, I/O log), Trace, History, Symbols, FujiNet; Intel/Z80 and
+  hex-style selectors. PMD85_OPEN_DEBUGGER=1 opens it at start.
 - Tape: a PTP deck in the host (IifTape::PrepareBlock/TapeCommand), flash
   load traps (ported, gated on a tape being loaded), import routing.
 - Gamepad (gamepad_sdl.c from the CoCo app) -> joystick 4004/482 bits.

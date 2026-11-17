@@ -16,6 +16,9 @@
 
 #include "window.h"
 
+#include "debugger/dbg_window.h"
+#include "pmd85debug.h"
+
 #include <stdlib.h>
 #include <string.h>
 
@@ -152,7 +155,7 @@ static gboolean window_key(Pmd85Window *self, guint keyval,
 
     if (keyval == GDK_KEY_F12) {
         if (down)
-            pmd85_window_toast(self, "The debugger is not in this build yet");
+            pmd85_debugger_toggle(GTK_WINDOW(self), self->session);
         return TRUE;
     }
 
@@ -222,6 +225,15 @@ static void action_reset(GSimpleAction *action, GVariant *param,
     (void)param;
     pmd85session_reset(self->session);
     pmd85_window_toast(self, "RESET");
+}
+
+static void action_debugger(GSimpleAction *action, GVariant *param,
+                            gpointer user_data)
+{
+    Pmd85Window *self = PMD85_WINDOW(user_data);
+    (void)action;
+    (void)param;
+    pmd85_debugger_show(GTK_WINDOW(self), self->session);
 }
 
 static void action_cold(GSimpleAction *action, GVariant *param,
@@ -455,6 +467,7 @@ static GMenu *build_menu(void)
     g_menu_append(fujinet, "FujiNet Console Log\xe2\x80\xa6", "win.fujinet-log");
     g_menu_append_section(menu, "FujiNet", G_MENU_MODEL(fujinet));
 
+    g_menu_append(tail, "Debugger (F12)", "win.debugger");
     g_menu_append(tail, "Preferences\xe2\x80\xa6", "win.preferences");
     g_menu_append(tail, "About FujiNet Go PMD 85", "win.about");
     g_menu_append_section(menu, NULL, G_MENU_MODEL(tail));
@@ -470,6 +483,7 @@ static GMenu *build_menu(void)
 static const GActionEntry win_actions[] = {
     {.name = "reset", .activate = action_reset},
     {.name = "cold", .activate = action_cold},
+    {.name = "debugger", .activate = action_debugger},
     {.name = "fullscreen", .activate = action_fullscreen},
     {.name = "import-media", .activate = action_import_media},
     {.name = "fujinet-config", .activate = action_fujinet_config},
@@ -609,7 +623,14 @@ GtkWidget *pmd85_window_new(AdwApplication *app, pmd85session *session)
     show_start_warnings(self);
     gtk_widget_grab_focus(GTK_WIDGET(self->display));
 
+    /* Developer affordances: open a window alongside the main one. */
     if (getenv("PMD85_OPEN_SETTINGS"))
         pmd85_prefs_show(self, session);
+    if (getenv("PMD85_OPEN_DEBUGGER")) {
+        pmd85_debugger_show(GTK_WINDOW(self), session);
+        /* "run": open it, but leave the machine running */
+        if (!strcmp(getenv("PMD85_OPEN_DEBUGGER"), "run"))
+            pmd85debug_resume(pmd85session_debugger(session));
+    }
     return GTK_WIDGET(self);
 }

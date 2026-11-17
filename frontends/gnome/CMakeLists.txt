@@ -20,6 +20,7 @@ add_executable(fujinet-go-pmd85-gnome
   display.c
   prefs.c
   webview.c
+  debugger/dbg_window.c
 )
 target_link_libraries(fujinet-go-pmd85-gnome PRIVATE pmd85session PkgConfig::ADW)
 target_include_directories(fujinet-go-pmd85-gnome PRIVATE

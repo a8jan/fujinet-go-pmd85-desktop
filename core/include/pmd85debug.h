@@ -309,14 +309,23 @@ int pmd85debug_eval(pmd85debug *d, const char *text, long *out, char *err, int e
 /* ---- FujiNet: the DriveWire traffic on the Becker port ----------------
  * Recorded from session start whether or not the debugger is engaged. Safe
  * from any thread. */
+/* Bytes of an exchange kept for the dump: PMD85_FUJI_KEEP each way, so a
+ * whole 256-byte DriveWire payload with its command header fits; a dump
+ * that runs past it shows PMD85_FUJI_DIR and counts the rest. */
+#define PMD85_FUJI_DIR  256
+#define PMD85_FUJI_KEEP (PMD85_FUJI_DIR + 16)
+#define PMD85_FUJI_DATA (2 * PMD85_FUJI_KEEP)
 typedef struct {
     uint64_t serial;
     int      to_host;  /* 1: FujiNet -> PMD with no request before it */
     int      device;   /* the DriveWire opcode (E2 FUJI, D2 READEX...), -1 */
     int      command;  /* the FUJI/NET/... command byte, else -1 */
     int      length;   /* bytes FujiNet sent back, -1 for none */
-    int      nbytes;
-    uint8_t  data[64];
+    int      nbytes;   /* every byte of the exchange, kept or not */
+    int      nkept;    /* of them in data[]: the first PMD85_FUJI_KEEP each way */
+    uint8_t  data[PMD85_FUJI_DATA];   /* the kept bytes, in the order they crossed */
+    /* bit i (out_bits[i / 8] & 1 << i % 8): data[i] went PMD -> FujiNet */
+    uint8_t  out_bits[PMD85_FUJI_DATA / 8];
     char     text[96];
     uint32_t repeat;
 } pmd85_fuji_packet;
