@@ -1,5 +1,5 @@
 /*
- * FujiNet configuration (embedded web UI) and console log windows.
+ * The FujiNet web UI (in the system browser) and the console log window.
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
@@ -11,8 +11,8 @@
 
 G_BEGIN_DECLS
 
-/* Web UI window (WebKitGTK when built with it, otherwise opens the system
- * browser) and the FujiNet console log window. */
+/* Opens the FujiNet web UI in the system browser; shows (raising an existing
+ * one) the FujiNet console log window. */
 void pmd85_fujinet_config_show(GtkWindow *parent, pmd85session *session);
 void pmd85_fujinet_log_show(GtkWindow *parent, pmd85session *session);
 

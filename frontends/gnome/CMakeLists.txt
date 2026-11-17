@@ -1,6 +1,6 @@
-# GNOME frontend: GTK4 + libadwaita, with an embedded WebKitGTK view of the
-# FujiNet web admin when available (WITH_WEBVIEW). Found-or-skipped so lean
-# machines can still build the core / KDE side.
+# GNOME frontend: GTK4 + libadwaita (the FujiNet web UI opens in the system
+# browser). Found-or-skipped so lean machines can still build the core / KDE
+# side.
 
 find_package(PkgConfig REQUIRED)
 # GTK 4.16 for GdkMemoryTextureBuilder (the display reuses its GPU texture
@@ -19,7 +19,7 @@ add_executable(fujinet-go-pmd85-gnome
   window.c
   display.c
   prefs.c
-  webview.c
+  fujilog.c
   debugger/dbg_window.c
 )
 target_link_libraries(fujinet-go-pmd85-gnome PRIVATE pmd85session PkgConfig::ADW)
@@ -30,16 +30,6 @@ target_compile_definitions(fujinet-go-pmd85-gnome PRIVATE
   PMD85_APP_ID="${GNOME_APP_ID}"
   # Uninstalled runs fall back to the in-tree icon theme (pmd85_icon_name).
   PMD85_SOURCE_ICON_DIR="${CMAKE_SOURCE_DIR}/data/icons")
-
-if(WITH_WEBVIEW)
-  pkg_check_modules(WEBKIT IMPORTED_TARGET webkitgtk-6.0)
-  if(WEBKIT_FOUND)
-    target_link_libraries(fujinet-go-pmd85-gnome PRIVATE PkgConfig::WEBKIT)
-    target_compile_definitions(fujinet-go-pmd85-gnome PRIVATE HAVE_WEBKIT)
-  else()
-    message(STATUS "GNOME frontend: webkitgtk-6.0 not found -- FujiNet config opens in the browser")
-  endif()
-endif()
 
 install(TARGETS fujinet-go-pmd85-gnome RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(FILES data/${GNOME_APP_ID}.desktop

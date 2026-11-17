@@ -48,6 +48,8 @@ Done (2026-11-16, first pass)
   and 2A auto-run it, elsewhere it is started from the monitor.
 - ROM module "Module file": the user's own .rmm (32 KB ROM pack) or .mrm
   (MegaModule) image (setting module_file); menu and Preferences chooser.
+- FujiNet Web UI opens in the system browser (as the Atari 800 app; no
+  WebKitGTK); the Console Log window belongs to the app (grouped, our icon).
 - FujiNet menu as in the Atari 800 app: FujiNet Web UI, Console Log,
   Restart FujiNet (FujiNet alone, the PMD keeps running), Import to SD
   Card... (several at once), Open SD Folder.
@@ -82,6 +84,11 @@ Next
   display.c) about the sharp filter here: integer CPU prescale + linear
   remainder, rect snapped to device pixels (fractional scaling incl.).
   Verified on COSMIC at 130%.
+- Upstream (fujinet-go-coco-desktop): its embedded WebKit web UI lacks the
+  apple2/adam fix of 2026-07-28 ("create" -> system browser), so the Google
+  Drive / OneDrive Authorize buttons do nothing there; the Atari 800 app and
+  this one open the web UI in the browser instead. Its log/web windows also
+  skip gtk_window_set_application (not grouped with the main window).
 - Upstream: offer GPMD85Emulator an SDL-free machine build option, so the
   shim becomes unnecessary.
 - The firmware pin has no BUILD_COCO default fnconfig.ini, so the generic

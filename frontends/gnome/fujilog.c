@@ -1,59 +1,28 @@
 /*
- * FujiNet configuration window (embedded WebKitGTK view of the FujiNet web
- * admin, 127.0.0.1:64003 for this app) and a console log
- * window streaming the runtime's captured output.
+ * The FujiNet web UI (127.0.0.1:64003 for this app), opened in the system
+ * browser, and a console log window streaming the runtime's captured output.
+ *
+ * The web UI is not embedded (as in the Atari 800 app): its Google Drive and
+ * OneDrive Authorize buttons open the provider's consent page in a new tab,
+ * which an embedded view drops, and both providers refuse OAuth from an
+ * embedded web view anyway.
  *
  * Copyright (C) 2026 Thomas Cherryhomes, FujiNet Go contributors
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-#include "webview.h"
+#include "fujilog.h"
 
 #include <string.h>
 
-
-#ifdef HAVE_WEBKIT
-#include <webkit/webkit.h>
-#endif
-
-/* ---- configuration (web UI) --------------------------------------------- */
+/* ---- the web UI ----------------------------------------------------------- */
 
 void pmd85_fujinet_config_show(GtkWindow *parent, pmd85session *session)
 {
-    if (!pmd85session_fujinet_running(session)) {
-        /* Nothing to show; the caller's toast layer reports errors. */
-    }
-#ifdef HAVE_WEBKIT
-    {
-        static GtkWindow *win; /* one config window, re-presented */
-        if (win) {
-            gtk_window_present(win);
-            return;
-        }
-        win = GTK_WINDOW(adw_window_new());
-        g_object_add_weak_pointer(G_OBJECT(win), (gpointer *)&win);
-        gtk_window_set_title(win, "FujiNet Configuration");
-        gtk_window_set_default_size(win, 1000, 760);
-        gtk_window_set_transient_for(win, parent);
-
-        GtkWidget *view = webkit_web_view_new();
-        GtkWidget *tbview = adw_toolbar_view_new();
-        adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(tbview),
-                                     adw_header_bar_new());
-        adw_toolbar_view_set_content(ADW_TOOLBAR_VIEW(tbview), view);
-        adw_window_set_content(ADW_WINDOW(win), tbview);
-        webkit_web_view_load_uri(WEBKIT_WEB_VIEW(view),
-                                 pmd85session_fujinet_webui_url(session));
-        gtk_window_present(win);
-    }
-#else
-    {
-        GtkUriLauncher *launcher =
-            gtk_uri_launcher_new(pmd85session_fujinet_webui_url(session));
-        gtk_uri_launcher_launch(launcher, parent, NULL, NULL, NULL);
-        g_object_unref(launcher);
-    }
-#endif
+    GtkUriLauncher *launcher =
+        gtk_uri_launcher_new(pmd85session_fujinet_webui_url(session));
+    gtk_uri_launcher_launch(launcher, parent, NULL, NULL, NULL);
+    g_object_unref(launcher);
 }
 
 /* ---- console log --------------------------------------------------------- */
@@ -124,6 +93,8 @@ void pmd85_fujinet_log_show(GtkWindow *parent, pmd85session *session)
     gtk_window_set_title(win, "FujiNet Console Log");
     gtk_window_set_default_size(win, 820, 560);
     gtk_window_set_transient_for(win, parent);
+    /* one of the app's windows: grouped with the main one, with its icon */
+    gtk_window_set_application(win, gtk_window_get_application(parent));
 
     view = gtk_text_view_new();
     gtk_text_view_set_editable(GTK_TEXT_VIEW(view), FALSE);

@@ -16,7 +16,6 @@ endif()
 # machine can still build the other one (or just the core + tests).
 set(FRONTEND "all" CACHE STRING
     "Frontend to build: gnome, kde, macos, windows, all, none")
-option(WITH_WEBVIEW "Embed the FujiNet web UI (WebKitGTK / QtWebEngine)" ON)
 
 # Included here, at the top of the tree, so every subdirectory sees the
 # *variables* it defines: GNUInstallDirs caches CMAKE_INSTALL_DATADIR as an

@@ -24,7 +24,7 @@
 
 #include "display.h"
 #include "prefs.h"
-#include "webview.h"
+#include "fujilog.h"
 
 struct _Pmd85Window {
     AdwApplicationWindow parent_instance;

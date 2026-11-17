@@ -13,7 +13,7 @@ that enters the build, where it comes from, its licence, and how it gets in:
 | Becker port device (`core/pmd85/pmd85_becker.{h,cpp}`) | Jan Krupa's `becker-port` branch of GPMD85Emulator (written against the older, GPL-licensed tree; upstream has since moved to MIT) | MIT (Jan Krupa, FujiNet Go contributors), matching GPMD85Emulator | adapted source |
 | fujinet-firmware | https://github.com/FujiNetWIFI/fujinet-firmware (fork pin, see `cmake/Dependencies.cmake`) | GPL-3.0 | built as `libfujinet`, loaded at run time |
 | SDL3 | libsdl.org | zlib | linked (audio) |
-| GTK4, libadwaita, WebKitGTK (GNOME frontend) | GNOME | LGPL-2.1-or-later | linked |
+| GTK4, libadwaita (GNOME frontend) | GNOME | LGPL-2.1-or-later | linked |
 
 ## Firmware images
 
