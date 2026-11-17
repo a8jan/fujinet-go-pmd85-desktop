@@ -606,7 +606,8 @@ patch("lib/hardware/fnSystem.h", [
         '    int check_for_shutdown();\n',
         '    int request_for_shutdown();\n'
         '    int check_for_shutdown();\n'
-        '    void clear_shutdown_request();\n',
+        '    void clear_shutdown_request();\n'
+        '    int get_reboot_code() { return _reboot_code; }\n',
     ),
 ])
 patch("lib/hardware/fnSystem.cpp", [
@@ -622,6 +623,9 @@ patch("lib/hardware/fnSystem.cpp", [
         'void SystemManager::clear_shutdown_request()\n'
         '{\n'
         '    _shutdown_requests = 0;\n'
+        '    // a restarted runtime must not inherit a deferred reboot\n'
+        '    _reboot_at = 0;\n'
+        '    _reboot_code = EXIT_AND_RESTART;\n'
         '}\n',
     ),
     (

@@ -2,7 +2,9 @@
  * pmd85session FujiNet runtime control: dlopen libfujinet.so and drive the
  * fujinet_desktop_* entry points (the desktop build of fujinet-pc-coco plus
  * the in-process entry wrapper, tools/fujinet/support/fujinet_desktop_entry.cpp).
- * Port of the Android fujinet_android.cpp wrapper.
+ * Port of the Android fujinet_android.cpp wrapper. A watchdog (from the
+ * Atari 800 app) restarts a runtime that rebooted itself: the web UI's
+ * Restart, which in fujinet-pc is exit(75).
  *
  * Copyright (C) 2026 Thomas Cherryhomes
  * SPDX-License-Identifier: GPL-3.0-or-later
@@ -13,6 +15,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #if defined(_WIN32)
 #include <winsock2.h>
@@ -36,6 +39,7 @@ typedef const char *(*last_error_fn)(void);
 typedef int (*read_audio_fn)(int16_t *out, int max_samples, int rate);
 typedef void (*clear_audio_fn)(void);
 typedef int (*copy_log_fn)(char *out, int max_bytes);
+typedef int (*int_fn)(void);
 
 /* One runtime per process: the library owns background threads (web admin,
  * network listeners) that live inside its mapping, so it is loaded once and
@@ -50,6 +54,14 @@ static last_error_fn g_last_error;
 static read_audio_fn g_read_audio;
 static clear_audio_fn g_clear_audio;
 static copy_log_fn g_copy_log;
+static int_fn g_is_running, g_exit_code;   /* optional: no watchdog without */
+
+/* the watchdog */
+#define FUJINET_EXIT_AND_RESTART 75
+static pthread_t g_watch;
+static int g_watch_started;
+static volatile int g_watch_quit;
+static time_t g_restart_times[3];   /* the last restarts it made, oldest first */
 
 static int load_library_locked(pmd85session *s)
 {
@@ -74,6 +86,10 @@ static int load_library_locked(pmd85session *s)
         g_handle, "fujinet_desktop_clear_audio");
     g_copy_log = (copy_log_fn)pmd85_dynlib_sym(
         g_handle, "fujinet_desktop_copy_recent_log");
+    g_is_running = (int_fn)pmd85_dynlib_sym(g_handle, "fujinet_desktop_is_running");
+    g_exit_code = (int_fn)pmd85_dynlib_sym(g_handle, "fujinet_desktop_exit_code");
+    if (!g_is_running || !g_exit_code)
+        g_is_running = g_exit_code = NULL;
 
     if (!g_start || !g_stop || !g_last_error) {
         session_set_error(s, "%s is missing the desktop runtime contract",
@@ -158,21 +174,14 @@ static void force_boip_port(pmd85session *s)
     free(out);
 }
 
-int fujinet_start(pmd85session *s)
+static int start_locked(pmd85session *s)
 {
-    pthread_mutex_lock(&g_mtx);
-    if (s->fujinet_running) {
-        pthread_mutex_unlock(&g_mtx);
-        return 0;
-    }
     if (paths_provision_fujinet(s) != 0) {
-        pthread_mutex_unlock(&g_mtx);
         fprintf(stderr, "pmd85session: FujiNet runtime unavailable; "
                         "continuing without it\n");
         return -1;
     }
     if (load_library_locked(s) != 0) {
-        pthread_mutex_unlock(&g_mtx);
         return -1;
     }
     force_boip_port(s);
@@ -189,12 +198,65 @@ int fujinet_start(pmd85session *s)
         const char *err = g_last_error ? g_last_error() : NULL;
         session_set_error(s, "FujiNet runtime failed to start: %s",
                           err && *err ? err : "(unknown)");
-        pthread_mutex_unlock(&g_mtx);
         return -1;
     }
     s->fujinet_running = 1;
-    pthread_mutex_unlock(&g_mtx);
     return 0;
+}
+
+/* Restarts a runtime that ended with "restart me" (75); one that ended
+ * otherwise stays stopped. Three restarts within 30 s: it stays stopped
+ * (Restart FujiNet in the menu starts it again). The Becker port reconnects
+ * by itself. */
+static void *watch_main(void *arg)
+{
+    pmd85session *s = arg;
+    while (!g_watch_quit) {
+        pmd85_sleep_ms(100);
+        pthread_mutex_lock(&g_mtx);
+        if (s->fujinet_running && g_is_running && !g_is_running()) {
+            const int code = g_exit_code();
+            s->fujinet_running = 0;
+            if (code == FUJINET_EXIT_AND_RESTART) {
+                const time_t now = time(NULL);
+                if (now - g_restart_times[0] < 30) {
+                    fprintf(stderr, "pmd85session: FujiNet keeps restarting; "
+                                    "it is stopped (FujiNet > Restart FujiNet)\n");
+                } else {
+                    memmove(g_restart_times, g_restart_times + 1,
+                            sizeof g_restart_times[0] * 2);
+                    g_restart_times[2] = now;
+                    if (start_locked(s) == 0)
+                        fprintf(stderr, "pmd85session: FujiNet restarted itself\n");
+                    else
+                        fprintf(stderr, "pmd85session: FujiNet could not restart: %s\n",
+                                s->last_error);
+                }
+            } else {
+                fprintf(stderr, "pmd85session: FujiNet stopped (exit code %d)\n", code);
+            }
+        }
+        pthread_mutex_unlock(&g_mtx);
+    }
+    return NULL;
+}
+
+int fujinet_start(pmd85session *s)
+{
+    int rc;
+    pthread_mutex_lock(&g_mtx);
+    if (s->fujinet_running) {
+        pthread_mutex_unlock(&g_mtx);
+        return 0;
+    }
+    rc = start_locked(s);
+    if (rc == 0 && g_is_running && !g_watch_started) {
+        g_watch_quit = 0;
+        if (pthread_create(&g_watch, NULL, watch_main, s) == 0)
+            g_watch_started = 1;
+    }
+    pthread_mutex_unlock(&g_mtx);
+    return rc;
 }
 
 /* Wait until something is actually accepting on the Becker port.
@@ -249,6 +311,14 @@ void fujinet_stop(pmd85session *s)
 {
     stop_runtime_fn stop = NULL;
     clear_audio_fn clear = NULL;
+
+    /* the watchdog first, so it cannot restart what is being stopped */
+    if (g_watch_started) {
+        g_watch_quit = 1;
+        pthread_join(g_watch, NULL);
+        g_watch_started = 0;
+        g_watch_quit = 0;
+    }
 
     pthread_mutex_lock(&g_mtx);
     if (s->fujinet_running) {

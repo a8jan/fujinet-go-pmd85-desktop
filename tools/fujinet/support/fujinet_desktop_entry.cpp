@@ -1,6 +1,9 @@
 /*
  * In-process desktop entry for the FujiNet runtime (libfujinet.so), the COCO
- * (DriveWire) target the PMD 85 app builds. From fujinet-go-coco-desktop.
+ * (DriveWire) target the PMD 85 app builds. From fujinet-go-coco-desktop,
+ * plus fujinet_desktop_is_running / _exit_code from the Atari 800 app's copy:
+ * a runtime that reboots itself (the web UI's Restart, exit code 75 in
+ * fujinet-pc) ends its service loop instead, and the host restarts it.
  *
  * Adapted from the Android app's fujinet_android_entry.cpp: runs FujiNet's
  * main_setup() + fn_service_loop() on a background thread, captures the
@@ -87,6 +90,8 @@ std::condition_variable g_stop_condition;
 std::thread g_runtime_thread;
 std::string g_last_error;
 bool g_running = false;
+bool g_host_stop = false;     /* the host asked the runtime to stop */
+int g_exit_code = -1;         /* -1 running or stopped by the host; else the reboot code */
 bool g_setup_complete = false;
 bool g_setup_failed = false;
 std::mutex g_audio_mutex;
@@ -582,6 +587,12 @@ FUJINET_ENTRY bool fujinet_desktop_start_runtime(
     if (g_running) {
         return true;
     }
+    /* a runtime that ended on its own (a reboot) leaves its thread to join */
+    if (g_runtime_thread.joinable()) {
+        g_runtime_thread.join();
+    }
+    g_host_stop = false;
+    g_exit_code = -1;
     if (runtimeRootPath == nullptr || configPath == nullptr || sdPath == nullptr) {
         set_last_error_locked("FujiNet runtime arguments were missing");
         return false;
@@ -621,7 +632,7 @@ FUJINET_ENTRY bool fujinet_desktop_start_runtime(
                 config,
                 "-s",
                 sd,
-                // Web admin UI on the port the host app's webview points at.
+                // Web admin UI on the port the host app opens in the browser.
                 "-u",
                 webui_bind,
             };
@@ -655,11 +666,13 @@ FUJINET_ENTRY bool fujinet_desktop_start_runtime(
             }
 
             fn_service_loop(nullptr);
+            const int code = fnSystem.get_reboot_code();
             main_shutdown_handler();
             fnSystem.clear_shutdown_request();
             stop_log_capture();
 
             std::lock_guard<std::mutex> lock(g_mutex);
+            g_exit_code = g_host_stop ? -1 : code;
             g_running = false;
             g_stop_condition.notify_all();
         });
@@ -695,6 +708,7 @@ FUJINET_ENTRY void fujinet_desktop_stop_runtime() {
         if (!g_running && !g_runtime_thread.joinable()) {
             return;
         }
+        g_host_stop = true;
         fnSystem.request_for_shutdown();
         runtimeThread = std::move(g_runtime_thread);
 
@@ -737,6 +751,19 @@ FUJINET_ENTRY void fujinet_desktop_stop_runtime() {
         std::lock_guard<std::mutex> audioLock(g_audio_mutex);
         clear_audio_locked();
     }
+}
+
+/* 1 while the runtime's service loop runs. */
+FUJINET_ENTRY int fujinet_desktop_is_running() {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    return g_running ? 1 : 0;
+}
+
+/* After the runtime ended on its own: the code it would have exited with
+ * (75 = restart me, 0 = stay stopped); -1 otherwise. */
+FUJINET_ENTRY int fujinet_desktop_exit_code() {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    return g_running ? -1 : g_exit_code;
 }
 
 FUJINET_ENTRY const char* fujinet_desktop_last_error_message() {

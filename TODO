@@ -48,6 +48,9 @@ Done (2026-11-16, first pass)
   and 2A auto-run it, elsewhere it is started from the monitor.
 - ROM module "Module file": the user's own .rmm (32 KB ROM pack) or .mrm
   (MegaModule) image (setting module_file); menu and Preferences chooser.
+- FujiNet's own restart (web UI Restart: exit(75) in fujinet-pc) ends the
+  in-process runtime instead; a watchdog restarts it (as the Atari 800 app;
+  3 restarts in 30 s and it stays stopped). /restart?exit=1 stops it.
 - FujiNet Web UI opens in the system browser (as the Atari 800 app; no
   WebKitGTK); the Console Log window belongs to the app (grouped, our icon).
 - FujiNet menu as in the Atari 800 app: FujiNet Web UI, Console Log,
