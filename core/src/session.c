@@ -68,8 +68,11 @@ static const char *const k_colors[] = {
     "Monochrome", "Standard (TV)", "Colour", "ColorACE", NULL
 };
 static const char *const k_modules[] = {
-    "FujiNet", "BASIC-G", "None", NULL
+    "FujiNet", "BASIC-G", "None", "Module file", NULL
 };
+
+#define MODULE_FILE_MAX (8L * 1024 * 1024)   /* the MegaModule's 256 x 32 KB */
+#define ROM_PACK_MAX    (32L * 1024)
 
 /* Per model: the monitor ROM, and the stock BASIC-G module package (upstream's
  * res/default.conf [Model-*] and [RomModulePackages]). NULL = the model has no
@@ -152,6 +155,26 @@ static void rom_path(const pmd85session *s, char *dst, const char *name)
     snprintf(dst, PMD85HOST_PATH_MAX, "%s/%s", s->roms_dir, name);
 }
 
+static long file_size(const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    long n;
+    if (!f) return -1;
+    n = fseek(f, 0, SEEK_END) == 0 ? ftell(f) : -1;
+    fclose(f);
+    return n;
+}
+
+/* A .mrm, or an image too big for the 32 KB ROM pack, needs the MegaModule. */
+static int module_is_mega(const char *path)
+{
+    const char *dot = strrchr(path, '.');
+    if (dot && (dot[1] == 'm' || dot[1] == 'M') && (dot[2] == 'r' || dot[2] == 'R') &&
+        (dot[3] == 'm' || dot[3] == 'M') && !dot[4])
+        return 1;
+    return file_size(path) > ROM_PACK_MAX;
+}
+
 /* Everything the host needs to build the machine, from the session's state
  * and its settings. */
 static void build_config(pmd85session *s, pmd85host_config *c)
@@ -198,6 +221,19 @@ static void build_config(pmd85session *s, pmd85host_config *c)
         for (i = 0; i < 3 && k_model_roms[model].basic[i]; i++)
             rom_path(s, c->rmm[c->rmm_count++], k_model_roms[model].basic[i]);
         break;
+    case PMD85SESSION_MODULE_FILE: {
+        const char *path = pmd85session_module_file(s);
+        if (!*path) {
+            c->rom_module = PMD85_ROMMOD_NONE;
+        } else if (module_is_mega(path)) {
+            c->rom_module = PMD85_ROMMOD_MEGA;
+            snprintf(c->mrm, sizeof c->mrm, "%s", path);
+        } else {
+            c->rom_module = PMD85_ROMMOD_PACK;
+            snprintf(c->rmm[c->rmm_count++], sizeof c->rmm[0], "%s", path);
+        }
+        break;
+    }
     default:
         c->rom_module = PMD85_ROMMOD_NONE;
         break;
@@ -636,6 +672,42 @@ void pmd85session_set_module(pmd85session *s, int module)
     s->cur_module = module;
     pmd85session_set_int(s, "module", module);
     reconfigure(s);
+}
+
+const char *pmd85session_module_file(pmd85session *s)
+{
+    const char *p = s ? pmd85session_get_str(s, "module_file", "") : "";
+    return p ? p : "";
+}
+
+int pmd85session_module_file_ok(pmd85session *s)
+{
+    return file_size(pmd85session_module_file(s)) > 0;
+}
+
+int pmd85session_set_module_file(pmd85session *s, const char *path)
+{
+    long size;
+    if (!s) return -1;
+    if (!path || !*path) {
+        session_set_error(s, "No module file given");
+        return -1;
+    }
+    size = file_size(path);
+    if (size < 0) {
+        session_set_error(s, "Cannot read %s", path);
+        return -1;
+    }
+    if (size == 0 || size > MODULE_FILE_MAX) {
+        session_set_error(s, "%s is not a ROM module image (%ld bytes; 1 B to 8 MB)",
+                          path, size);
+        return -1;
+    }
+    pmd85session_set_str(s, "module_file", path);
+    s->cur_module = PMD85SESSION_MODULE_FILE;
+    pmd85session_set_int(s, "module", PMD85SESSION_MODULE_FILE);
+    reconfigure(s);
+    return 0;
 }
 
 void pmd85session_set_peripheral(pmd85session *s, const char *key, int on)

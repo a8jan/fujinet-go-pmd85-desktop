@@ -34,6 +34,8 @@ typedef struct {
     pmd85session *session;
     gboolean session_dirty;  /* a session option changed: restart on close */
     GtkWidget *addr_row;
+    GtkWidget *module_row;   /* the module combo */
+    GtkWidget *file_row;     /* the module file and its Choose button */
 } PrefsState;
 
 /* ---- row helpers ----------------------------------------------------------- */
@@ -108,13 +110,66 @@ static void model_changed(GObject *row, GParamSpec *p, gpointer ud)
     pmd85_window_sync_menu(st->window);
 }
 
+/* The module rows, from the session. The chooser can finish after the
+ * dialog closed, so this takes the rows (kept alive by the job), not st. */
+typedef struct {
+    pmd85session *session;
+    GtkWidget *module_row, *file_row;
+} ModuleRows;
+
+static void module_rows_refresh(const ModuleRows *r)
+{
+    const char *path = pmd85session_module_file(r->session);
+    g_autofree char *base = *path ? g_path_get_basename(path) : NULL;
+    adw_combo_row_set_selected(ADW_COMBO_ROW(r->module_row),
+                               (guint)pmd85session_module(r->session));
+    adw_action_row_set_subtitle(ADW_ACTION_ROW(r->file_row),
+        !base ? "None chosen: .rmm (32 KB ROM pack) or .mrm (MegaModule)"
+        : pmd85session_module_file_ok(r->session) ? base
+        : "Missing: choose it again");
+}
+
+static void module_rows_done(gpointer data, gboolean chosen)
+{
+    (void)chosen;
+    module_rows_refresh(data);
+}
+
+static void module_rows_free(gpointer data)
+{
+    ModuleRows *r = data;
+    g_object_unref(r->module_row);
+    g_object_unref(r->file_row);
+    g_free(r);
+}
+
+static void choose_module_file(PrefsState *st)
+{
+    ModuleRows *r = g_new0(ModuleRows, 1);
+    r->session = st->session;
+    r->module_row = g_object_ref(st->module_row);
+    r->file_row = g_object_ref(st->file_row);
+    pmd85_window_choose_module_file(st->window, module_rows_done, r, module_rows_free);
+}
+
 static void module_changed(GObject *row, GParamSpec *p, gpointer ud)
 {
     PrefsState *st = ud;
     (void)p;
     if (selected(row) == pmd85session_module(st->session)) return;
+    if (selected(row) == PMD85SESSION_MODULE_FILE &&
+        !pmd85session_module_file_ok(st->session)) {
+        choose_module_file(st);   /* switches, or puts the combo back */
+        return;
+    }
     pmd85session_set_module(st->session, selected(row));
     pmd85_window_sync_menu(st->window);
+}
+
+static void module_file_clicked(GtkButton *button, gpointer ud)
+{
+    (void)button;
+    choose_module_file(ud);
 }
 
 static void color_changed(GObject *row, GParamSpec *p, gpointer ud)
@@ -223,11 +278,26 @@ static AdwPreferencesPage *machine_page(PrefsState *st)
     adw_preferences_group_add(machine, combo_row("Model", NULL,
         pmd85session_model_name, pmd85session_model(s),
         G_CALLBACK(model_changed), st));
-    adw_preferences_group_add(machine, combo_row("ROM module",
+    st->module_row = combo_row("ROM module",
         "FujiNet boots FujiNet CONFIG on a PMD 85-2 or 85-2A; other models "
         "start it from the monitor",
         pmd85session_module_name, pmd85session_module(s),
-        G_CALLBACK(module_changed), st));
+        G_CALLBACK(module_changed), st);
+    adw_preferences_group_add(machine, st->module_row);
+    {
+        GtkWidget *choose = gtk_button_new_with_label("Choose\xe2\x80\xa6");
+        ModuleRows r;
+        gtk_widget_set_valign(choose, GTK_ALIGN_CENTER);
+        g_signal_connect(choose, "clicked", G_CALLBACK(module_file_clicked), st);
+        st->file_row = adw_action_row_new();
+        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(st->file_row), "Module file");
+        adw_action_row_add_suffix(ADW_ACTION_ROW(st->file_row), choose);
+        adw_preferences_group_add(machine, st->file_row);
+        r.session = s;
+        r.module_row = st->module_row;
+        r.file_row = st->file_row;
+        module_rows_refresh(&r);
+    }
     adw_preferences_group_add(machine, switch_row("256 KB RAM expansion",
         "PMD 85-2A and 85-3", pmd85session_get_int(s, "ram256k", 0), "ram256k",
         G_CALLBACK(peripheral_changed), st));

@@ -24,6 +24,12 @@ void pmd85_window_apply_display(Pmd85Window *self);
 /* Bring the menu's radio items in line with the session (after Preferences
  * changed something). */
 void pmd85_window_sync_menu(Pmd85Window *self);
+/* Ask for a ROM module image (.rmm .mrm) and, if one is picked and loads,
+ * switch the slot to it. done(data, chosen) runs either way, then
+ * destroy(data). */
+typedef void (*Pmd85ModuleFileDone)(gpointer data, gboolean chosen);
+void pmd85_window_choose_module_file(Pmd85Window *self, Pmd85ModuleFileDone done,
+                                     gpointer data, GDestroyNotify destroy);
 
 /* main.c: the icon name to use, which differs between an installed app and
  * one running out of the build tree. */

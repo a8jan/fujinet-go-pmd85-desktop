@@ -84,6 +84,42 @@ int main(void)
     lit = lit_now(s);
     CHECK(lit > 30 && lit < 1500, "85-3 monitor screen (%d lit)", lit);
 
+    /* a module file of the user's: a plain .rmm goes into the ROM pack (no
+     * MegaModule), a .mrm into a MegaModule; a bad one changes nothing */
+    {
+        char rmm[1300], mrm[1300], empty[1300];
+        FILE *in, *out;
+        int ch;
+        snprintf(rmm, sizeof rmm, "%s/basic2A.rmm", pmd85session_roms_path(s));
+        snprintf(mrm, sizeof mrm, "%s/loader-copy.mrm", dir);
+        snprintf(empty, sizeof empty, "%s/empty.rmm", dir);
+        snprintf(probe, sizeof probe, "%s/fujinet-config-loader.rmm",
+                 pmd85session_roms_path(s));
+        in = fopen(probe, "rb");
+        out = fopen(mrm, "wb");
+        while (in && out && (ch = fgetc(in)) != EOF) fputc(ch, out);
+        if (in) fclose(in);
+        if (out) fclose(out);
+        fclose(fopen(empty, "wb"));
+
+        pmd85session_set_model(s, PMD85SESSION_MODEL_2A);
+        CHECK(pmd85session_set_module_file(s, rmm) == 0, "rmm: %s", pmd85session_last_error(s));
+        CHECK(pmd85session_module(s) == PMD85SESSION_MODULE_FILE, "module not FILE");
+        CHECK(pmd85session_module_file_ok(s), "module file not ok");
+        sleep_ms(1500);
+        CHECK(pmd85session_mega_page(s) == -1, "a .rmm went into a MegaModule");
+
+        CHECK(pmd85session_set_module_file(s, mrm) == 0, "mrm: %s", pmd85session_last_error(s));
+        sleep_ms(3500);
+        CHECK(pmd85session_mega_page(s) == 0, "a .mrm not in a MegaModule (%d)",
+              pmd85session_mega_page(s));
+        lit = lit_now(s);
+        CHECK(lit > 1500, "the loader from a .mrm not on screen (%d lit)", lit);
+
+        CHECK(pmd85session_set_module_file(s, empty) != 0, "an empty file accepted");
+        CHECK(!strcmp(pmd85session_module_file(s), mrm), "a refused file was kept");
+    }
+
     pmd85session_stop(s);
     CHECK(!pmd85session_is_running(s), "still running after stop");
     CHECK(pmd85session_start(s, &opts) == 0, "restart: %s", pmd85session_last_error(s));
@@ -94,8 +130,10 @@ int main(void)
     /* the choices persisted */
     s = pmd85session_new(&paths);
     pmd85session_default_opts(s, &opts);
-    CHECK(opts.model == PMD85SESSION_MODEL_3, "model did not persist (%d)", opts.model);
-    CHECK(opts.module == PMD85SESSION_MODULE_NONE, "module did not persist (%d)", opts.module);
+    CHECK(opts.model == PMD85SESSION_MODEL_2A, "model did not persist (%d)", opts.model);
+    CHECK(opts.module == PMD85SESSION_MODULE_FILE, "module did not persist (%d)", opts.module);
+    CHECK(strstr(pmd85session_module_file(s), "loader-copy.mrm") != NULL,
+          "module file did not persist (%s)", pmd85session_module_file(s));
     pmd85session_free(s);
 
     test_rmtree(dir);

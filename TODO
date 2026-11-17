@@ -46,6 +46,8 @@ Done (2026-11-16, first pass)
   are decoded from the instruction in the host's per-instruction hook.
 - The FujiNet module is attached on every model with a module slot; the 2
   and 2A auto-run it, elsewhere it is started from the monitor.
+- ROM module "Module file": the user's own .rmm (32 KB ROM pack) or .mrm
+  (MegaModule) image (setting module_file); menu and Preferences chooser.
 
 Next
 ----

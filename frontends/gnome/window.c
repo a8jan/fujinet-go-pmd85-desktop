@@ -270,11 +270,100 @@ static void action_model(GSimpleAction *action, GVariant *param,
     pmd85_window_toast(self, msg);
 }
 
+/* ---- a ROM module file of the user's ------------------------------------ */
+
+typedef struct {
+    Pmd85Window *self;
+    Pmd85ModuleFileDone done;
+    gpointer data;
+    GDestroyNotify destroy;
+} ModuleFileJob;
+
+static void module_file_done(GObject *source, GAsyncResult *result,
+                             gpointer user_data)
+{
+    ModuleFileJob *job = user_data;
+    Pmd85Window *self = job->self;
+    g_autoptr(GFile) file =
+        gtk_file_dialog_open_finish(GTK_FILE_DIALOG(source), result, NULL);
+    g_autofree char *path = file ? g_file_get_path(file) : NULL;
+    gboolean chosen = FALSE;
+
+    if (path) {
+        if (pmd85session_set_module_file(self->session, path) == 0) {
+            g_autofree char *base = g_path_get_basename(path);
+            g_autofree char *msg = g_strdup_printf("ROM module: %s", base);
+            pmd85_window_toast(self, msg);
+            chosen = TRUE;
+        } else {
+            pmd85_window_toast(self, pmd85session_last_error(self->session));
+        }
+    }
+    pmd85_window_sync_menu(self);
+    if (job->done)
+        job->done(job->data, chosen);
+    if (job->destroy)
+        job->destroy(job->data);
+    g_object_unref(self);
+    g_free(job);
+}
+
+void pmd85_window_choose_module_file(Pmd85Window *self, Pmd85ModuleFileDone done,
+                                     gpointer data, GDestroyNotify destroy)
+{
+    GtkFileDialog *dialog = gtk_file_dialog_new();
+    GListStore *filters = g_list_store_new(GTK_TYPE_FILE_FILTER);
+    GtkFileFilter *roms = gtk_file_filter_new();
+    GtkFileFilter *all = gtk_file_filter_new();
+    ModuleFileJob *job = g_new0(ModuleFileJob, 1);
+    const char *cur = pmd85session_module_file(self->session);
+
+    job->self = g_object_ref(self);
+    job->done = done;
+    job->data = data;
+    job->destroy = destroy;
+
+    gtk_file_filter_set_name(roms, "ROM modules (.rmm .mrm)");
+    gtk_file_filter_add_suffix(roms, "rmm");
+    gtk_file_filter_add_suffix(roms, "mrm");
+    gtk_file_filter_set_name(all, "All files");
+    gtk_file_filter_add_pattern(all, "*");
+    g_list_store_append(filters, roms);
+    g_list_store_append(filters, all);
+    gtk_file_dialog_set_title(dialog, "Choose ROM Module File");
+    gtk_file_dialog_set_filters(dialog, G_LIST_MODEL(filters));
+    if (*cur) {
+        g_autoptr(GFile) f = g_file_new_for_path(cur);
+        gtk_file_dialog_set_initial_file(dialog, f);
+    }
+    gtk_file_dialog_open(dialog, GTK_WINDOW(self), NULL, module_file_done, job);
+    g_object_unref(roms);
+    g_object_unref(all);
+    g_object_unref(filters);
+    g_object_unref(dialog);
+}
+
+static void action_module_file(GSimpleAction *action, GVariant *param,
+                               gpointer user_data)
+{
+    (void)action;
+    (void)param;
+    pmd85_window_choose_module_file(PMD85_WINDOW(user_data), NULL, NULL, NULL);
+}
+
 static void action_module(GSimpleAction *action, GVariant *param,
                           gpointer user_data)
 {
     Pmd85Window *self = PMD85_WINDOW(user_data);
-    pmd85session_set_module(self->session, g_variant_get_int32(param));
+    int module = g_variant_get_int32(param);
+
+    /* "Module file" with nothing (left) to load asks for one first */
+    if (module == PMD85SESSION_MODULE_FILE &&
+        !pmd85session_module_file_ok(self->session)) {
+        pmd85_window_choose_module_file(self, NULL, NULL, NULL);
+        return;
+    }
+    pmd85session_set_module(self->session, module);
     g_simple_action_set_state(action, g_variant_new_int32(
                                   pmd85session_module(self->session)));
 }
@@ -448,6 +537,12 @@ static GMenu *build_menu(void)
     g_menu_append_submenu(machine, "Model", G_MENU_MODEL(sub));
     g_object_unref(sub);
     sub = radio_menu("win.module", pmd85session_module_name);
+    {
+        GMenu *pick = g_menu_new();
+        g_menu_append(pick, "Choose Module File\xe2\x80\xa6", "win.module-file");
+        g_menu_append_section(sub, NULL, G_MENU_MODEL(pick));
+        g_object_unref(pick);
+    }
     g_menu_append_submenu(machine, "ROM Module", G_MENU_MODEL(sub));
     g_object_unref(sub);
     g_menu_append(machine, "RESET", "win.reset");
@@ -486,6 +581,7 @@ static const GActionEntry win_actions[] = {
     {.name = "debugger", .activate = action_debugger},
     {.name = "fullscreen", .activate = action_fullscreen},
     {.name = "import-media", .activate = action_import_media},
+    {.name = "module-file", .activate = action_module_file},
     {.name = "fujinet-config", .activate = action_fujinet_config},
     {.name = "fujinet-log", .activate = action_fujinet_log},
     {.name = "preferences", .activate = action_preferences},

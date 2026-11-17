@@ -72,6 +72,10 @@ enum {
     PMD85SESSION_MODULE_BASIC,
     /* Nothing in the slot: the bare monitor. */
     PMD85SESSION_MODULE_NONE,
+    /* A module image the user picked (setting "module_file"): a .mrm, or
+     * anything over 32 KB, goes into a MegaModule; else the classic ROM pack.
+     * (Values are stored in the settings, so new ones go last.) */
+    PMD85SESSION_MODULE_FILE,
 };
 
 /* Integer scaling vs. stretched, for the display widget (shared setting
@@ -151,6 +155,14 @@ const char *pmd85session_module_hint(pmd85session *s, int model, int module);
 void pmd85session_set_model(pmd85session *s, int model);
 void pmd85session_set_color_profile(pmd85session *s, int profile);
 void pmd85session_set_module(pmd85session *s, int module);
+/* Pick a module image and switch to PMD85SESSION_MODULE_FILE. 0, or -1 with
+ * pmd85session_last_error() set (missing, empty or over 8 MB) and nothing
+ * changed. */
+int  pmd85session_set_module_file(pmd85session *s, const char *path);
+/* The picked module image's path, "" for none. */
+const char *pmd85session_module_file(pmd85session *s);
+/* 1 when the picked image is there to load. */
+int  pmd85session_module_file_ok(pmd85session *s);
 void pmd85session_set_peripheral(pmd85session *s, const char *key, int on);
 int  pmd85session_model(const pmd85session *s);
 int  pmd85session_color_profile(const pmd85session *s);
