@@ -6,6 +6,10 @@
  */
 
 #include <adwaita.h>
+#ifndef G_OS_WIN32
+#include <glib-unix.h>
+#include <signal.h>
+#endif
 
 #include "pmd85session.h"
 #include "window.h"
@@ -32,6 +36,26 @@ const char *pmd85_icon_name(void)
             name = "fujinet-go-pmd85";
     }
     return name;
+}
+
+/* The log, tape and debugger windows belong to the application too (so the
+ * shell groups them with it), which means the application would outlive its
+ * main window and run on behind a stray log window. Closing the main window
+ * is quitting, as in the Atari 800 app. */
+static gboolean on_main_close(GtkWindow *win, gpointer user_data)
+{
+    (void)win;
+    g_application_quit(G_APPLICATION(user_data));
+    return FALSE;
+}
+
+/* SIGTERM (a logout, a service manager) and SIGINT (Ctrl+C in the terminal)
+ * quit the way closing the window does, so the session stops the machine
+ * and FujiNet and saves the settings instead of dying mid-write. */
+static gboolean on_quit_signal(gpointer user_data)
+{
+    g_application_quit(G_APPLICATION(user_data));
+    return G_SOURCE_CONTINUE;
 }
 
 static void on_activate(AdwApplication *app, gpointer user_data)
@@ -61,6 +85,7 @@ static void on_activate(AdwApplication *app, gpointer user_data)
 
     win = GTK_WINDOW(pmd85_window_new(app, g_session));
     gtk_window_set_icon_name(win, pmd85_icon_name());
+    g_signal_connect(win, "close-request", G_CALLBACK(on_main_close), app);
     gtk_window_present(win);
 }
 
@@ -80,5 +105,9 @@ int main(int argc, char *argv[])
         PMD85_APP_ID, G_APPLICATION_DEFAULT_FLAGS);
     g_signal_connect(app, "activate", G_CALLBACK(on_activate), NULL);
     g_signal_connect(app, "shutdown", G_CALLBACK(on_shutdown), NULL);
+#ifndef G_OS_WIN32
+    g_unix_signal_add(SIGTERM, on_quit_signal, app);
+    g_unix_signal_add(SIGINT, on_quit_signal, app);
+#endif
     return g_application_run(G_APPLICATION(app), argc, argv);
 }
