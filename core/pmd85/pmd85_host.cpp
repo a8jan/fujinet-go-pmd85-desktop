@@ -25,7 +25,10 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <chrono>
+#include <condition_variable>
 #include <mutex>
+#include <string>
 #include <condition_variable>
 #include <chrono>
 #include <vector>
@@ -49,6 +52,9 @@
 #include "Pmd32.h"
 #include "RomModule.h"
 #include "RomMegaModule.h"
+#include "TapeBrowser.h"
+#include "Emulator.h"   /* the shim's TSettings: the deck's four settings */
+#include "macros8080.h" /* FLAG_Z, FLAG_CY for the flash-load traps */
 
 #include "pmd85_becker.h"
 
@@ -447,6 +453,7 @@ public:
 
     bool ok() const { return built; }
     void RunFrame();
+    void TapeTraps(WORD pc);
     void SetColorProfile(int profile) { cfg.color_profile = profile; SetColors(); }
     void Reset() { cpu->DoReset(); }
 
@@ -803,6 +810,121 @@ void PmdMachine::Render()
     }
 }
 
+/* TEmulator::CpuTimerCallback's "tape flash loading - ROM entry-point
+ * mappings": with a block prepared for flash load, a monitor's read-block
+ * (8DC4h, EDC4h on the 85-3) or read-byte (8B6Ch / EB6Ch) routine is done
+ * here at once -- the bytes into memory, CRC, registers and flags as the
+ * routine leaves them -- and execution goes on at its RET. The ROM bytes
+ * checked first keep it to the monitors it was written for. And the Mato's
+ * tape write (8D6Ch), which upstream catches the same way. */
+void PmdMachine::TapeTraps(WORD pc)
+{
+    WORD byte, hl, de, bc, tapeBlockLen, len, crc;
+    BYTE *tapeBlock, val1, val2, val3;
+    bool cy;
+
+    if (ifTape->IsFlashLoadOn()) {
+        /* block */
+        if (pc == 0x8DC4 || (pc == 0xEDC4 && model == CM_V3)) {
+            val1 = memory->ReadByte((pc & 0xFF00) | 0xD3);
+            val2 = memory->ReadByte((pc & 0xFF00) | 0xE1);
+            val3 = memory->ReadByte(0x8F89);
+            if (((model != CM_MATO && val1 == 0x23 && val2 == 0xC9) ||
+                 (model == CM_MATO && val1 == 0xD6 && val2 == 0x8F && val3 == 0xC9)) &&
+                ifTape->GetTapeBlock(&tapeBlock, &tapeBlockLen) == true) {
+
+                hl = cpu->GetHL();  /* HL = start address */
+                de = cpu->GetDE();  /* DE = block length - 1 */
+                bc = cpu->GetBC();  /* C = 0 check, C != 0 load */
+                cy = ((bc & 0xFF) != 0);
+                if (tapeBlock != NULL && (de + 2) <= tapeBlockLen) {
+                    tapeBlockLen = (WORD)(de + 1);
+                    crc = 0;
+                    for (len = 0; len < tapeBlockLen; len++) {
+                        if (cy == true)
+                            memory->WriteByte(hl, *tapeBlock);
+                        crc += *tapeBlock;
+                        hl++;
+                        tapeBlock++;
+                    }
+                    if (model == CM_V1)
+                        byte = *tapeBlock;
+                    else {
+                        byte = 0;
+                        hl -= tapeBlockLen;
+                    }
+                    tapeBlockLen++;
+                    crc &= 0xFF;
+
+                    cpu->SetHL(hl);
+                    cpu->SetDE(0xFFFF);
+                    cpu->SetBC((WORD)((crc << 8) | (bc & 0xFF)));
+                    if (crc == *tapeBlock)
+                        cpu->SetAF((WORD)((byte << 8) | FLAG_Z));
+                    else
+                        cpu->SetAF((WORD)((byte << 8) | FLAG_CY));
+                    if (model == CM_MATO)
+                        cpu->SetPC((WORD)0x8F89);
+                    else
+                        cpu->SetPC((WORD)((pc & 0xFF00) | 0xE1));
+
+                    ifTape->AcceptTapeBlock(tapeBlockLen);
+                }
+            }
+        }
+        /* byte */
+        else if ((pc == 0x8B6C || (pc == 0xEB6C && model == CM_V3)) &&
+                 (model != CM_V1 && model != CM_ALFA && model != CM_MATO)) {
+            val1 = memory->ReadByte(pc);
+            val2 = memory->ReadByte((pc & 0xFF00) | 0x9B);
+            if (val1 == 0xC5 && val2 == 0xC9) {
+                BYTE b = 0;
+                cy = ifTape->GetTapeByte(&b);
+                cpu->SetAF((WORD)((b << 8) | ((cy == true) ? FLAG_CY : 0)));
+                cpu->SetPC((WORD)((pc & 0xFF00) | 0x9B));
+            }
+        }
+    }
+
+    /* the tape write on Mato */
+    if (model == CM_MATO && pc == 0x8D6C) {
+        hl = cpu->GetHL();  /* HL = start address */
+        de = cpu->GetDE();  /* DE = length - 1 */
+        tapeBlockLen = (WORD)(de + 1);
+        int pos = ifTape->GetSavedBlock(&tapeBlock);
+        tapeBlock += pos;
+
+        if (ifTape->GetTxState() == TP_TX_WAIT_HEAD && tapeBlockLen == 14) {
+            *((WORD *)tapeBlock) = (WORD)63;
+            tapeBlock += 2;
+            for (int i = 0; i < 16; i++) *tapeBlock++ = 0xFF;
+            for (int i = 0; i < 16; i++) *tapeBlock++ = 0;
+            for (int i = 0; i < 16; i++) *tapeBlock++ = 0x55;
+        } else {
+            *((WORD *)tapeBlock) = (WORD)(tapeBlockLen + 1);
+            tapeBlock += 2;
+        }
+
+        crc = 0;
+        for (len = 0; len < tapeBlockLen; len++) {
+            val1 = memory->ReadByte(hl);
+            *tapeBlock = val1;
+            crc += val1;
+            hl++;
+            tapeBlock++;
+        }
+        *tapeBlock = (BYTE)crc;
+
+        ifTape->SetTxState((ifTape->GetTxState() == TP_TX_WAIT_HEAD) ? TP_TX_HEAD
+                                                                     : TP_TX_BODY);
+        cpu->SetHL((WORD)(hl + tapeBlockLen));
+        cpu->SetDE((WORD)0);
+        cpu->SetBC((WORD)(crc << 8));
+        cpu->SetAF((WORD)0x0056);
+        cpu->SetPC((WORD)0x8D93);
+    }
+}
+
 void PmdMachine::RunFrame()
 {
     /* ---- BaseTimerCallback: keyboard, Consul 384 mode ---- */
@@ -825,6 +947,11 @@ void PmdMachine::RunFrame()
         /* switch PMD 85-3 to the compatibility mode */
         if (pc == 0xE04C && model == CM_V3 && cfg.compat_mode && !memory->IsAllRAM())
             cpu->SetPC(0xFFF0);
+
+        /* tape flash load and the Mato's tape save: before the debugger's
+         * hook, which then sees where execution really goes on */
+        if (ifTape && (ifTape->IsFlashLoadOn() || model == CM_MATO))
+            TapeTraps(cpu->GetPC());
 
         /* The debugger's hook may park this thread (a breakpoint, a step);
          * the frame simply resumes from here when it lets go. */
@@ -855,6 +982,198 @@ void PmdMachine::RunFrame()
 /* ======================================================================== */
 
 static PmdMachine *g_machine = nullptr;
+
+/* ---- the tape deck ----------------------------------------------------------- */
+
+/* The deck's settings, through the shim's Emulator.h (TapeBrowser.cpp reads
+ * them as Settings->TapeBrowser->...). */
+static TSettings::SetTapeBrowser g_tape_settings = { false, true, false, AS_NEXTHEAD, nullptr };
+static TSettings g_settings_object = { &g_tape_settings };
+TSettings *Settings = &g_settings_object;
+
+static TTapeBrowser *g_deck;              /* the emulator thread's */
+static std::string g_tape_path;           /* the emulator thread's */
+static std::atomic<int> g_tape_flash{1}, g_tape_sound{0};
+
+static std::mutex g_tape_state_mtx;
+static pmd85host_tape_state g_tape_state;
+
+struct TapeRequest {
+    int cmd = 0;
+    std::string path;
+    bool pending = false, done = false;
+    int rc = -1;
+    std::string err;
+};
+static std::mutex g_tape_caller_mtx;      /* one command at a time */
+static std::mutex g_tape_req_mtx;
+static std::condition_variable g_tape_req_cv;
+static TapeRequest g_tape_req;
+
+void pmd85host_tape_options(int flash, int sound)
+{
+    g_tape_flash.store(flash ? 1 : 0);
+    g_tape_sound.store(sound ? 1 : 0);
+}
+
+int pmd85host_tape_command(int cmd, const char *path, char *err, int errsz)
+{
+    std::lock_guard<std::mutex> one(g_tape_caller_mtx);
+    std::unique_lock<std::mutex> lk(g_tape_req_mtx);
+    g_tape_req = TapeRequest();
+    g_tape_req.cmd = cmd;
+    g_tape_req.path = path ? path : "";
+    g_tape_req.pending = true;
+    if (!g_tape_req_cv.wait_for(lk, std::chrono::seconds(1),
+                                [] { return g_tape_req.done; })) {
+        g_tape_req.pending = false;
+        if (err && errsz > 0)
+            snprintf(err, (size_t)errsz, "The PMD is not running (stopped, or "
+                     "held by the debugger)");
+        return -1;
+    }
+    if (err && errsz > 0)
+        snprintf(err, (size_t)errsz, "%s", g_tape_req.err.c_str());
+    return g_tape_req.rc;
+}
+
+void pmd85host_tape_state_get(pmd85host_tape_state *out)
+{
+    if (!out) return;
+    std::lock_guard<std::mutex> lk(g_tape_state_mtx);
+    *out = g_tape_state;
+}
+
+/* The deck onto a (new) machine's tape interface. Whatever was playing
+ * stops: the interface it played into is gone. */
+static void tape_attach(PmdMachine *m)
+{
+    if (!g_deck)
+        g_deck = new TTapeBrowser();
+    g_deck->playing = false;
+    if (m && m->ifTape)
+        g_deck->SetIfTape(m->ifTape);
+}
+
+static int tape_run(int cmd, const std::string &path, std::string &err)
+{
+    TTapeBrowser *d = g_deck;
+    int r;
+
+    switch (cmd) {
+    case PMD85_TAPE_LOAD:
+        r = d->SetTapeFileName(path.c_str());
+        if (r < 0 || d->totalBlocks == 0) {
+            if (r >= 0) d->SetNewTape();
+            err = (r < 0 && !FileExists(path.c_str())) ? "Cannot open " + path
+                                                         : path + " is not a PMD 85 tape";
+            g_tape_path.clear();
+            return -1;
+        }
+        g_tape_path = path;
+        if (r > 0) {
+            err = "The tape's end is damaged; the blocks before it are in";
+            return 1;
+        }
+        return 0;
+    case PMD85_TAPE_EJECT:
+        d->SetNewTape();
+        g_tape_path.clear();
+        return 0;
+    case PMD85_TAPE_PLAY:
+        if (d->totalBlocks == 0) {
+            err = "No tape in the deck";
+            return -1;
+        }
+        d->ActionPlay();
+        return 0;
+    case PMD85_TAPE_STOP:
+        d->ActionStop();
+        return 0;
+    case PMD85_TAPE_REWIND:
+        d->ActionStop();
+        if (d->totalBlocks > 0)
+            d->SetCurrentBlock(0);
+        return 0;
+    case PMD85_TAPE_SAVE: {
+        if (d->totalBlocks == 0) {
+            err = "Nothing on the tape to save";
+            return -1;
+        }
+        /* TEmulator::SaveTape: written whole, then it is the tape */
+        const int curr = d->currBlockIdx;
+        r = d->SaveTape(path.c_str());
+        if (r != 0) {
+            err = r < 0 ? "Cannot write " + path : "Error writing " + path;
+            return -1;
+        }
+        if (d->SetTapeFileName(path.c_str()) == 0)
+            d->SetCurrentBlock(curr);
+        g_tape_path = path;
+        return 0;
+    }
+    }
+    err = "Unknown tape command";
+    return -1;
+}
+
+/* The pending command, if any (emulator thread, between frames). */
+static void tape_service(void)
+{
+    TapeRequest req;
+    {
+        std::lock_guard<std::mutex> lk(g_tape_req_mtx);
+        if (!g_tape_req.pending)
+            return;
+        req = g_tape_req;
+        g_tape_req.pending = false;
+    }
+    std::string err;
+    const int rc = g_deck ? tape_run(req.cmd, req.path, err) : -1;
+    if (!g_deck) err = "No tape deck";
+    {
+        std::lock_guard<std::mutex> lk(g_tape_req_mtx);
+        g_tape_req.rc = rc;
+        g_tape_req.err = err;
+        g_tape_req.done = true;
+    }
+    g_tape_req_cv.notify_all();
+}
+
+static void tape_publish(void)
+{
+    pmd85host_tape_state st;
+    memset(&st, 0, sizeof st);
+    st.current = -1;
+    if (g_deck) {
+        TTapeBrowser *d = g_deck;
+        st.blocks = d->totalBlocks;
+        st.current = d->totalBlocks > 0 ? d->currBlockIdx : -1;
+        st.playing = d->playing ? 1 : 0;
+        st.recorded = d->tapeChanged ? 1 : 0;
+        if (d->ProgressBar) {
+            st.progress = d->ProgressBar->Position;
+            st.progress_max = d->ProgressBar->Max;
+        }
+        TTapeBrowser::TAPE_BLOCK *b = d->GetBlock(st.current);
+        if (b && b->cType) {
+            char name[9];
+            int n = 8;
+            memcpy(name, b->cName, 8);
+            while (n > 0 && (name[n - 1] == ' ' || name[n - 1] == '\0')) n--;
+            name[n] = '\0';
+            for (int i = 0; i < n; i++)
+                if ((unsigned char)name[i] < 0x20 || (unsigned char)name[i] > 0x7E) name[i] = '?';
+            snprintf(st.block, sizeof st.block, "%03u/%c %s", (unsigned)b->bNumber,
+                     (b->cType >= 0x20 && b->cType < 0x7F) ? b->cType : '?', name);
+        } else if (b) {
+            snprintf(st.block, sizeof st.block, "..");
+        }
+        snprintf(st.path, sizeof st.path, "%s", g_tape_path.c_str());
+    }
+    std::lock_guard<std::mutex> lk(g_tape_state_mtx);
+    g_tape_state = st;
+}
 
 /* what other threads may ask about, refreshed by the emulator thread after
  * every frame (the machine itself is the emulator thread's alone, and may be
@@ -925,7 +1244,9 @@ int pmd85host_core_start(const pmd85host_config *cfg)
     g_rom_loads_base = 0;
     g_rom_loads.store(0);
     g_rom_last.store(0);
+    tape_attach(g_machine);
     publish_state(g_machine);
+    tape_publish();
     return 1;
 }
 
@@ -954,6 +1275,7 @@ void pmd85host_core_run_frame(void)
             memcpy(m->keyBuffer, g_machine ? g_machine->keyBuffer : m->keyBuffer,
                    sizeof m->keyBuffer);
             g_rom_loads_base = g_rom_loads.load();
+            tape_attach(m);
             delete g_machine;
             g_machine = m;
         } else {
@@ -968,9 +1290,14 @@ void pmd85host_core_run_frame(void)
         if (color >= 0) g_machine->SetColorProfile(color);
     }
 
+    g_tape_settings.flash = g_tape_flash.load() != 0;
+    g_tape_settings.monitoring = g_tape_sound.load() != 0;
+    tape_service();
+
     pmd85host_drain_keys(key_sink);
     g_machine->RunFrame();
     publish_state(g_machine);
+    tape_publish();
 }
 
 void pmd85host_set_becker_trace(Pmd85BeckerTrace fn) { PmdBecker::SetTrace(fn); }

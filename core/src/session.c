@@ -177,6 +177,8 @@ static int module_is_mega(const char *path)
 
 /* Everything the host needs to build the machine, from the session's state
  * and its settings. */
+static void apply_tape_options(pmd85session *s);
+
 static void build_config(pmd85session *s, pmd85host_config *c)
 {
     int model = s->cur_model;
@@ -546,6 +548,8 @@ int pmd85session_start(pmd85session *s, const pmd85session_start_opts *opts)
         s->debugger = pmd85debug_create(s);
     pmd85debug_trace_install(s->debugger);
 
+    apply_tape_options(s);
+
     s->stop_flag = 0;
     s->frame_serial = 0;
     s->frame_w = 0;
@@ -588,6 +592,20 @@ int pmd85session_start(pmd85session *s, const pmd85session_start_opts *opts)
 
     if (opts->enable_audio)
         audio_start(s);
+
+    /* the tape that was in the deck last time (upstream does the same); a
+     * deck that still has a tape -- a session restart -- keeps it */
+    {
+        const char *tape = pmd85session_get_str(s, "tape_file", "");
+        pmd85host_tape_state st;
+        pmd85host_tape_state_get(&st);
+        if (tape && *tape && st.blocks == 0) {
+            char path[PMD85_PATH_MAX];
+            snprintf(path, sizeof path, "%s", tape);
+            if (pmd85host_tape_command(PMD85_TAPE_LOAD, path, NULL, 0) < 0)
+                pmd85session_set_str(s, "tape_file", "");
+        }
+    }
 
     pthread_mutex_unlock(&s->lifecycle_mtx);
     return 0;
@@ -812,6 +830,85 @@ const char *pmd85session_fujinet_warning(const pmd85session *s)
 const char *pmd85session_becker_endpoint(const pmd85session *s)
 {
     return s->becker_endpoint[0] ? s->becker_endpoint : "127.0.0.1:65505";
+}
+
+/****************************************************************************/
+/** The tape deck                                                          **/
+/****************************************************************************/
+
+static void apply_tape_options(pmd85session *s)
+{
+    pmd85host_tape_options(pmd85session_get_int(s, "tape_flash", 1),
+                           pmd85session_get_int(s, "tape_sound", 0));
+}
+
+void pmd85session_set_tape_options(pmd85session *s, int flash, int sound)
+{
+    if (!s) return;
+    pmd85session_set_int(s, "tape_flash", flash ? 1 : 0);
+    pmd85session_set_int(s, "tape_sound", sound ? 1 : 0);
+    apply_tape_options(s);
+}
+
+static int tape_cmd(pmd85session *s, int cmd, const char *path)
+{
+    char err[512] = "";
+    int rc;
+    if (!s) return -1;
+    if (!s->running) {
+        session_set_error(s, "The PMD is not running");
+        return -1;
+    }
+    rc = pmd85host_tape_command(cmd, path, err, sizeof err);
+    if (rc != 0)
+        session_set_error(s, "%s", err);
+    return rc;
+}
+
+int pmd85session_tape_load(pmd85session *s, const char *path)
+{
+    int rc = tape_cmd(s, PMD85_TAPE_LOAD, path);
+    if (rc >= 0)
+        pmd85session_set_str(s, "tape_file", path);
+    return rc;
+}
+
+int pmd85session_tape_eject(pmd85session *s)
+{
+    int rc = tape_cmd(s, PMD85_TAPE_EJECT, NULL);
+    if (rc == 0)
+        pmd85session_set_str(s, "tape_file", "");
+    return rc;
+}
+
+int pmd85session_tape_play(pmd85session *s)   { return tape_cmd(s, PMD85_TAPE_PLAY, NULL); }
+int pmd85session_tape_stop(pmd85session *s)   { return tape_cmd(s, PMD85_TAPE_STOP, NULL); }
+int pmd85session_tape_rewind(pmd85session *s) { return tape_cmd(s, PMD85_TAPE_REWIND, NULL); }
+
+int pmd85session_tape_save(pmd85session *s, const char *path)
+{
+    int rc = tape_cmd(s, PMD85_TAPE_SAVE, path);
+    if (rc == 0)
+        pmd85session_set_str(s, "tape_file", path);
+    return rc;
+}
+
+void pmd85session_tape_get_info(pmd85session *s, pmd85session_tape_info *out)
+{
+    pmd85host_tape_state st;
+    if (!out) return;
+    memset(out, 0, sizeof *out);
+    out->current = -1;
+    if (!s) return;
+    pmd85host_tape_state_get(&st);
+    out->blocks = st.blocks;
+    out->current = st.current;
+    out->playing = st.playing;
+    out->recorded = st.recorded;
+    out->progress = st.progress;
+    out->progress_max = st.progress_max;
+    snprintf(out->block, sizeof out->block, "%s", st.block);
+    snprintf(out->path, sizeof out->path, "%s", st.path);
 }
 
 int pmd85session_fujinet_restart(pmd85session *s)

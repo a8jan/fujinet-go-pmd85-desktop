@@ -253,6 +253,41 @@ int  pmd85session_fujinet_copy_log(pmd85session *s, char *dst, int max);
  * the last one's size. */
 int  pmd85session_rom_loads(const pmd85session *s, int *last_size);
 
+/* ---- the tape deck ---------------------------------------------------------
+ * A .ptp/.pmd tape as a list of blocks (a file's header and body are one
+ * block), played into the PMD's tape interface; it stops by itself before
+ * the next file. What the PMD saves to tape (MGSV, BASIC's SAVE...) is
+ * recorded as new blocks; Save Tape As writes them all to a .ptp, which then
+ * is the tape. The tape stays in across model changes and is put back at the
+ * next start (setting "tape_file").
+ *
+ * Each returns 0, or -1 with pmd85session_last_error(); load returns 1 when
+ * a damaged tape went in up to the damage (the message says so). They wait
+ * for the emulator thread (a frame, 20 ms). */
+int  pmd85session_tape_load(pmd85session *s, const char *path);
+int  pmd85session_tape_eject(pmd85session *s);
+int  pmd85session_tape_play(pmd85session *s);
+int  pmd85session_tape_stop(pmd85session *s);
+int  pmd85session_tape_rewind(pmd85session *s);
+int  pmd85session_tape_save(pmd85session *s, const char *path);
+
+typedef struct {
+    int  blocks;          /* 0: no tape */
+    int  current;         /* the block that plays next, -1 none */
+    int  playing;
+    int  recorded;        /* blocks recorded and not saved yet */
+    int  progress, progress_max;   /* bytes of the current block */
+    char block[24];       /* the current block: "016/? VLAK", ".." raw data */
+    char path[1024];      /* the tape's file, "" when only recorded */
+} pmd85session_tape_info;
+void pmd85session_tape_get_info(pmd85session *s, pmd85session_tape_info *out);
+
+/* Flash load (setting "tape_flash", on by default): a file's body goes into
+ * memory at once through the monitor's tape routines, its header still in
+ * real time. Tape sound ("tape_sound", off): the signal on the speaker
+ * while the tape plays. Both take effect at once and persist. */
+void pmd85session_set_tape_options(pmd85session *s, int flash, int sound);
+
 /* ---- media and paths ------------------------------------------------------ */
 
 /* Route a dropped/opened file: ROM-module images (.rmm .mrm) and other FujiNet

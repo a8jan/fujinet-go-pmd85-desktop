@@ -48,6 +48,12 @@ Done (2026-11-16, first pass)
   and 2A auto-run it, elsewhere it is started from the monitor.
 - ROM module "Module file": the user's own .rmm (32 KB ROM pack) or .mrm
   (MegaModule) image (setting module_file); menu and Preferences chooser.
+- Tape deck: GPMD85's TapeBrowser staged unchanged (the shim's Emulator.h
+  gives it its four settings); flash load and the Mato save trap ported
+  from TEmulator::CpuTimerCallback (the body is flashed, the header plays in
+  real time, as upstream). Tape menu: Load, Save As, Play, Stop, Rewind,
+  Eject (asks when recordings are unsaved); status in the subtitle; the tape
+  is remembered (tape_file). Preferences: Flash load (on), Tape sound (off).
 - FujiNet's own restart (web UI Restart: exit(75) in fujinet-pc) ends the
   in-process runtime instead; a watchdog restarts it (as the Atari 800 app;
   3 restarts in 30 s and it stays stopped). /restart?exit=1 stops it.
@@ -73,8 +79,8 @@ Next
   Console, Disassembly, Memory, Breakpoints (incl. IN/OUT), Watches, I/O
   (map, chips, I/O log), Trace, History, Symbols, FujiNet; Intel/Z80 and
   hex-style selectors. PMD85_OPEN_DEBUGGER=1 opens it at start.
-- Tape: a PTP deck in the host (IifTape::PrepareBlock/TapeCommand), flash
-  load traps (ported, gated on a tape being loaded), import routing.
+- Tape, later: a block-list window (upstream's tape browser: pick, move,
+  delete blocks), a "Play" that also types the load command.
 - Gamepad (gamepad_sdl.c from the CoCo app) -> joystick 4004/482 bits.
 - Keyboard options apply by cold restart; make exchZY/numpad live.
 - K11 (F12 is the debugger key): offer it another way (on-screen key or a

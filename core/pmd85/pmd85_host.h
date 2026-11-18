@@ -178,6 +178,42 @@ int  pmd85host_becker_rx_pending(void);  /* any thread */
  * the size of the last one. Any thread. */
 int  pmd85host_becker_rom_loads(int *last_size);
 
+/* --- the tape deck ------------------------------------------------------------
+ * GPMD85Emulator's TapeBrowser: a .ptp/.pmd tape as a list of blocks, played
+ * into the tape interface, stopping before the next header block; what the
+ * PMD saves is recorded as new blocks. It outlives machine rebuilds (a model
+ * change keeps the tape in) and session restarts.
+ *
+ * A command is carried out by the emulator thread at its next frame, and
+ * pmd85host_tape_command waits for it: 0 done, -1 with err set (also when
+ * the emulator does not run a frame within a second -- stopped, or held by
+ * the debugger). Any thread but the emulator's. */
+enum {
+    PMD85_TAPE_LOAD = 1,   /* path: insert this tape (stops a playing one) */
+    PMD85_TAPE_EJECT,      /* recorded blocks not saved are dropped */
+    PMD85_TAPE_PLAY,
+    PMD85_TAPE_STOP,
+    PMD85_TAPE_REWIND,     /* stop, back to the first block */
+    PMD85_TAPE_SAVE,       /* path: every block as a .ptp; it becomes the tape */
+};
+int pmd85host_tape_command(int cmd, const char *path, char *err, int errsz);
+/* flash: blocks go into memory at once through the monitors' tape routines
+ * (on by default); sound: the tape signal on the speaker while it plays.
+ * Taken at the next frame; any thread. */
+void pmd85host_tape_options(int flash, int sound);
+
+typedef struct {
+    int  blocks;          /* 0: no tape */
+    int  current;         /* the block that plays next, -1 none */
+    int  playing;
+    int  recorded;        /* blocks were recorded and not saved yet */
+    int  progress, progress_max;   /* bytes of the current block */
+    char block[24];       /* the current block: "016/? VLAK" or ".." (data) */
+    char path[1024];      /* the tape file, "" when only recorded */
+} pmd85host_tape_state;
+/* As of the last frame. Any thread. */
+void pmd85host_tape_state_get(pmd85host_tape_state *out);
+
 /* --- state for the frontends (any thread, relaxed) ------------------------- */
 int  pmd85host_led_state(void);    /* SystemPIO LED bits: 1 yellow 2 red 4 blue */
 int  pmd85host_mega_page(void);    /* current MegaModule page, -1 when absent */

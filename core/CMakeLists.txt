@@ -137,6 +137,12 @@ target_include_directories(dasm_test PRIVATE include)
 add_test(NAME dasm COMMAND dasm_test "${GPMD85_DIR}")
 set_tests_properties(dasm PROPERTIES SKIP_RETURN_CODE 77)
 
+add_executable(tape_test tests/tape_test.c)
+target_link_libraries(tape_test pmd85session)
+target_include_directories(tape_test PRIVATE src)
+add_test(NAME tape COMMAND tape_test)
+set_tests_properties(tape PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+
 add_executable(boot_smoke tests/boot_smoke.c)
 target_link_libraries(boot_smoke pmd85session)
 target_include_directories(boot_smoke PRIVATE src)

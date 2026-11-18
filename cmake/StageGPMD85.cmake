@@ -53,6 +53,7 @@ set(GPMD85_STAGED_SOURCES
   ChipPIO8255 ChipPIT8253 ChipUSART8251
   IifGPIO IifTape IifTapeMato IifTapePMD85 IifTimer
   Mif85 Mouse602 Pmd32 RomModule RomMegaModule SystemPIO
+  TapeBrowser
   CommonUtils)
 # Headers with no .cpp of their own.
 set(GPMD85_STAGED_HEADERS

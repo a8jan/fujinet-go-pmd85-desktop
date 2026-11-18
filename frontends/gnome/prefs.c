@@ -166,6 +166,19 @@ static void module_changed(GObject *row, GParamSpec *p, gpointer ud)
     pmd85_window_sync_menu(st->window);
 }
 
+/* the two tape switches carry their setting's key; both are written */
+static void tape_changed(GObject *row, GParamSpec *p, gpointer ud)
+{
+    PrefsState *st = ud;
+    int flash = pmd85session_get_int(st->session, "tape_flash", 1);
+    int sound = pmd85session_get_int(st->session, "tape_sound", 0);
+    const char *key = g_object_get_data(row, "pmd85-key");
+    (void)p;
+    if (!strcmp(key, "tape_flash")) flash = active(row);
+    else sound = active(row);
+    pmd85session_set_tape_options(st->session, flash, sound);
+}
+
 static void module_file_clicked(GtkButton *button, gpointer ud)
 {
     (void)button;
@@ -319,6 +332,19 @@ static AdwPreferencesPage *machine_page(PrefsState *st)
         "On the GPIO port, from a gamepad", pmd85session_get_int(s, "joystick", 1),
         "joystick", G_CALLBACK(peripheral_changed), st));
     adw_preferences_page_add(page, periph);
+
+    {
+        AdwPreferencesGroup *tape = ADW_PREFERENCES_GROUP(adw_preferences_group_new());
+        adw_preferences_group_set_title(tape, "Tape");
+        adw_preferences_group_add(tape, switch_row("Flash load",
+            "A program's body goes into memory at once; off loads in real "
+            "time at 1200 Bd", pmd85session_get_int(s, "tape_flash", 1),
+            "tape_flash", G_CALLBACK(tape_changed), st));
+        adw_preferences_group_add(tape, switch_row("Tape sound",
+            "Hear the tape while it plays", pmd85session_get_int(s, "tape_sound", 0),
+            "tape_sound", G_CALLBACK(tape_changed), st));
+        adw_preferences_page_add(page, tape);
+    }
 
     adw_preferences_group_set_title(keyb, "Keyboard");
     adw_preferences_group_set_description(keyb,
