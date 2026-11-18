@@ -202,6 +202,7 @@ static void build_config(pmd85session *s, pmd85host_config *c)
     c->ram256k = pmd85session_get_int(s, "ram256k", 0) ? 1 : 0;
     c->compat_mode = pmd85session_get_int(s, "compat_mode", 0) ? 1 : 0;
     c->mif85 = s->opts.mif85;
+    c->mouse602 = s->opts.mouse602;
     c->pmd32 = s->opts.pmd32;
     c->joystick_gpio0 = s->opts.joystick ? 1 : 0;   /* the host leaves A to a PMD 32 */
     c->joystick_gpio1 = s->opts.joystick ? 1 : 0;
@@ -484,6 +485,7 @@ void pmd85session_default_opts(pmd85session *s, pmd85session_start_opts *opts)
                              k_modules, PMD85SESSION_MODULE_FUJINET);
     opts->ram256k = pmd85session_get_int(s, "ram256k", 0) ? 1 : 0;
     opts->mif85 = pmd85session_get_int(s, "mif85", 0) ? 1 : 0;
+    opts->mouse602 = pmd85session_get_int(s, "mouse602", 0) ? 1 : 0;
     opts->pmd32 = pmd85session_get_int(s, "pmd32", 0) ? 1 : 0;
     opts->joystick = pmd85session_get_int(s, "joystick", 1) ? 1 : 0;
     opts->enable_fujinet = pmd85session_get_int(s, "enable_fujinet", 1) ? 1 : 0;
@@ -754,6 +756,7 @@ void pmd85session_set_peripheral(pmd85session *s, const char *key, int on)
     if (!s || !key) return;
     on = on ? 1 : 0;
     if (!strcmp(key, "mif85")) s->opts.mif85 = on;
+    else if (!strcmp(key, "mouse602")) s->opts.mouse602 = on;
     else if (!strcmp(key, "pmd32")) s->opts.pmd32 = on;
     else if (!strcmp(key, "joystick")) s->opts.joystick = on;
     else if (!strcmp(key, "ram256k")) s->opts.ram256k = on;
@@ -866,6 +869,25 @@ unsigned pmd85session_joystick_held(pmd85session *s, int port)
     r = pmd85_joy_merge(col, PMD85_SRC_COUNT);
     pthread_mutex_unlock(&s->joy_mtx);
     return r;
+}
+
+void pmd85session_mouse(pmd85session *s, int x, int y, unsigned buttons, int inside)
+{
+    if (!s || !s->running || !s->opts.mouse602) return;
+    pmd85host_mouse(x, y, buttons, inside);
+}
+
+int pmd85session_mouse_on(pmd85session *s)
+{
+    if (!s || !s->opts.mouse602) return 0;
+    /* upstream's ConnectMouse602: the PMD 85-1, -2, -2A, -3 and the Consul */
+    switch (s->cur_model) {
+    case PMD85SESSION_MODEL_1: case PMD85SESSION_MODEL_2: case PMD85SESSION_MODEL_2A:
+    case PMD85SESSION_MODEL_3: case PMD85SESSION_MODEL_C2717:
+        return 1;
+    default:
+        return 0;
+    }
 }
 
 unsigned session_joysticks(pmd85session *s)

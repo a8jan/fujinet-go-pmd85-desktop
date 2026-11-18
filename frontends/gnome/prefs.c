@@ -337,10 +337,6 @@ static AdwPreferencesPage *machine_page(PrefsState *st)
         "On the GPIO port (takes joystick port A)",
         pmd85session_get_int(s, "pmd32", 0), "pmd32",
         G_CALLBACK(peripheral_changed), st));
-    adw_preferences_group_add(periph, switch_row("Joystick 4004/482",
-        "Two, on the GPIO ports: 1 on port A, 2 on port B (Input: gamepads)",
-        pmd85session_get_int(s, "joystick", 1),
-        "joystick", G_CALLBACK(peripheral_changed), st));
     adw_preferences_page_add(page, periph);
 
     {
@@ -510,6 +506,25 @@ static gboolean pads_tick(gpointer ud)
     return G_SOURCE_CONTINUE;
 }
 
+/* The joystick interface and the mouse: peripherals, the machine rebuilt;
+ * the gamepads' rows follow (which joysticks there are changed). */
+static void input_peripheral_changed(GObject *row, GParamSpec *p, gpointer ud)
+{
+    PrefsState *st = ud;
+    (void)p;
+    pmd85session_set_peripheral(st->session, g_object_get_data(row, "pmd85-key"), active(row));
+    if (st->pads)
+        pads_fill(st);
+}
+
+/* A setting read where it is used, so at once. */
+static void plain_switch_changed(GObject *row, GParamSpec *p, gpointer ud)
+{
+    PrefsState *st = ud;
+    (void)p;
+    pmd85session_set_int(st->session, g_object_get_data(row, "pmd85-key"), active(row));
+}
+
 /* The left stick: read by the pad thread on every poll, so at once. */
 static void analog_changed(GObject *row, GParamSpec *p, gpointer ud)
 {
@@ -534,6 +549,10 @@ static AdwPreferencesPage *input_page(PrefsState *st)
         "Each drives a 4004/482 joystick: the D-pad steers, A, B, the shoulders "
         "and the triggers fire. Joystick 1 is GPIO port A (not while the PMD 32 "
         "is connected), joystick 2 port B.");
+    adw_preferences_group_add(st->pads, switch_row("Joystick 4004/482",
+        "The interface on the GPIO ports (the machine restarts)",
+        pmd85session_get_int(s, "joystick", 1), "joystick",
+        G_CALLBACK(input_peripheral_changed), st));
     st->pad_rows = g_ptr_array_new();
     pads_fill(st);
     adw_preferences_page_add(page, st->pads);
@@ -543,6 +562,22 @@ static AdwPreferencesPage *input_page(PrefsState *st)
         pmd85session_get_int(s, "analog_stick", 1), "analog_stick",
         G_CALLBACK(analog_changed), st));
     adw_preferences_page_add(page, g);
+
+    {
+        AdwPreferencesGroup *m = ADW_PREFERENCES_GROUP(adw_preferences_group_new());
+        adw_preferences_group_set_title(m, "Mouse 602");
+        adw_preferences_group_set_description(m,
+            "The pointer over the PMD's screen moves the mouse and its buttons are the "
+            "mouse's (the middle one presses both). PMD 85-1, -2, -2A, -3 and Consul 2717.");
+        adw_preferences_group_add(m, switch_row("Mouse 602",
+            "On port 8Ch (the machine restarts)",
+            pmd85session_get_int(s, "mouse602", 0), "mouse602",
+            G_CALLBACK(input_peripheral_changed), st));
+        adw_preferences_group_add(m, switch_row("Hide the pointer over the screen",
+            "PMD software draws its own", pmd85session_get_int(s, "mouse_hide_pointer", 1),
+            "mouse_hide_pointer", G_CALLBACK(plain_switch_changed), st));
+        adw_preferences_page_add(page, m);
+    }
 
     st->pad_timer = g_timeout_add(500, pads_tick, st);
     return page;

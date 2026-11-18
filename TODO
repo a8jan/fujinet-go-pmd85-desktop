@@ -117,6 +117,12 @@ Next
   buttons 0-3. Preferences > Input lists the pads; connect toasts.
   gamepad_test drives it with SDL virtual pads; joystick_test reads the
   ports with a PMD program.
+- (done) Mouse 602 (GPMD85Emulator's, port 8Ch; PIT timer 1 clocks it,
+  timer 0 interrupts): Machine > Peripherals switch (85-1..3, Consul 2717);
+  the host pointer over the picture moves it by PMD pixels, its buttons are
+  the mouse's (middle = both, as upstream); leaving the screen and coming
+  back is no move; the host pointer hidden over the picture (Input page).
+  mouse_test reads port 8Ch with a PMD program.
 - Gamepads, later: remappable buttons (a pad button -> a PMD key, as the
   Atari app's Input page), keys as a joystick (upstream's JT_KEYS), the
   drawn Controllers window. The flatpak manifest needs --device=all (or

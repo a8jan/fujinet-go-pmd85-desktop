@@ -90,6 +90,7 @@ typedef struct pmd85host_config {
     char mrm[PMD85HOST_PATH_MAX];                    /* MEGA: the image */
 
     int mif85;            /* MIF 85 music interface (SAA1099) */
+    int mouse602;         /* Mouse 602 on port 8Ch (85-1..3, Consul 2717) */
 
     int pmd32;            /* PMD 32 disk drive on GPIO */
     int pmd32_extra;      /* its SD-card extended commands */
@@ -165,6 +166,14 @@ void pmd85host_release_all_keys(void);
 int  pmd85host_drain_keys(void (*sink)(int down, int usage));
 /* port 0 = GPIO port A, 1 = port B; bits are PMD85_JOY_*. Any thread. */
 void pmd85host_set_joystick(int port, unsigned bits);
+/* The host pointer for the Mouse 602, as a position on the PMD's screen in
+ * its pixels (x 0..287, or 383 on a Consul 2717; y 0..255) and the buttons
+ * held (PMD85_MOUSE_*). The emulator thread takes the latest at each frame
+ * and the mouse moves by the difference -- one quadrature step per two
+ * pixels (GPMD85Emulator's: one per pixel, which is fast). inside 0: the pointer left the screen; the next
+ * position it comes back at is a fresh start, not a jump. Any thread. */
+enum { PMD85_MOUSE_LEFT = 1, PMD85_MOUSE_RIGHT = 2, PMD85_MOUSE_MIDDLE = 4 };
+void pmd85host_mouse(int x, int y, unsigned buttons, int inside);
 
 /* --- Becker port ------------------------------------------------------------
  * Every byte across the link, for the debugger's FujiNet tab: dir 1 is

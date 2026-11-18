@@ -131,6 +131,14 @@ struct _Pmd85Display {
     GtkWindow *toplevel;
     Pmd85AspectMode aspect_mode;
     Pmd85Scaling scaling;
+
+    /* where the last snapshot put the picture, in widget coordinates: the
+     * Mouse 602's pointer is mapped through it */
+    double pic_x, pic_y, pic_w, pic_h;
+    double ptr_x, ptr_y;   /* the pointer over the widget */
+    gboolean ptr_in;       /* ... and that it is */
+    unsigned buttons;      /* PMD85SESSION_MOUSE_* held */
+    gboolean ptr_hidden;
 };
 
 /* Largest blow-up per axis for the sharp filter. Past this the leftover
@@ -388,9 +396,105 @@ static void pmd85_display_snapshot(GtkWidget *widget, GtkSnapshot *snapshot)
         break;
     }
 
+    self->pic_x = x0 / ds - ox;
+    self->pic_y = y0 / ds - oy;
+    self->pic_w = dw / ds;
+    self->pic_h = dh / ds;
     gtk_snapshot_append_scaled_texture(snapshot, tex, filter,
-        &GRAPHENE_RECT_INIT((float)(x0 / ds - ox), (float)(y0 / ds - oy),
-                            (float)(dw / ds), (float)(dh / ds)));
+        &GRAPHENE_RECT_INIT((float)self->pic_x, (float)self->pic_y,
+                            (float)self->pic_w, (float)self->pic_h));
+}
+
+/* ---- the Mouse 602 ------------------------------------------------------
+ * The host pointer over the picture, in the PMD's pixels, to the session
+ * (as GPMD85Emulator hands the pointer over its screen to the mouse); off
+ * the picture is "left the screen". The host pointer is hidden over the
+ * picture while the machine has the mouse (setting "mouse_hide_pointer", on):
+ * the PMD software draws its own. */
+static void mouse_update(Pmd85Display *self)
+{
+    const gboolean on = self->session && pmd85session_mouse_on(self->session);
+    gboolean inside = FALSE;
+    int x = 0, y = 0;
+    gboolean hide;
+
+    if (on && self->ptr_in && self->pic_w > 0 && self->pic_h > 0 && self->fb_w > 0) {
+        double u = (self->ptr_x - self->pic_x) / self->pic_w;
+        double v = (self->ptr_y - self->pic_y) / self->pic_h;
+        if (u >= 0 && u < 1 && v >= 0 && v < 1) {
+            inside = TRUE;
+            x = (int)(u * self->fb_w);
+            y = (int)(v * self->fb_h);
+        }
+    }
+    if (on)
+        pmd85session_mouse(self->session, x, y, inside ? self->buttons : 0, inside);
+
+    hide = inside && pmd85session_get_int(self->session, "mouse_hide_pointer", 1);
+    if (hide != self->ptr_hidden) {
+        gtk_widget_set_cursor_from_name(GTK_WIDGET(self), hide ? "none" : NULL);
+        self->ptr_hidden = hide;
+    }
+}
+
+static void on_motion(GtkEventControllerMotion *c, double x, double y, gpointer ud)
+{
+    Pmd85Display *self = ud;
+    (void)c;
+    self->ptr_x = x;
+    self->ptr_y = y;
+    self->ptr_in = TRUE;
+    mouse_update(self);
+}
+
+static void on_leave(GtkEventControllerMotion *c, gpointer ud)
+{
+    Pmd85Display *self = ud;
+    (void)c;
+    self->ptr_in = FALSE;
+    self->buttons = 0;
+    mouse_update(self);
+}
+
+static unsigned mouse_bit(guint button)
+{
+    switch (button) {
+    case GDK_BUTTON_PRIMARY: return PMD85SESSION_MOUSE_LEFT;
+    case GDK_BUTTON_SECONDARY: return PMD85SESSION_MOUSE_RIGHT;
+    case GDK_BUTTON_MIDDLE: return PMD85SESSION_MOUSE_MIDDLE;
+    default: return 0;
+    }
+}
+
+static void on_pressed(GtkGestureClick *g, int n, double x, double y, gpointer ud)
+{
+    Pmd85Display *self = ud;
+    (void)n;
+    self->ptr_x = x;
+    self->ptr_y = y;
+    self->ptr_in = TRUE;
+    self->buttons |= mouse_bit(gtk_gesture_single_get_current_button(GTK_GESTURE_SINGLE(g)));
+    gtk_widget_grab_focus(GTK_WIDGET(self));
+    mouse_update(self);
+}
+
+static void on_released(GtkGestureClick *g, int n, double x, double y, gpointer ud)
+{
+    Pmd85Display *self = ud;
+    (void)n;
+    self->ptr_x = x;
+    self->ptr_y = y;
+    self->buttons &= ~mouse_bit(gtk_gesture_single_get_current_button(GTK_GESTURE_SINGLE(g)));
+    mouse_update(self);
+}
+
+/* a press can end without a release reaching us (a grab elsewhere) */
+static void on_cancel(GtkGesture *g, GdkEventSequence *seq, gpointer ud)
+{
+    Pmd85Display *self = ud;
+    (void)g; (void)seq;
+    self->buttons = 0;
+    mouse_update(self);
 }
 
 static void pmd85_display_dispose(GObject *object)
@@ -434,6 +538,19 @@ static void pmd85_display_init(Pmd85Display *self)
     gtk_widget_set_hexpand(GTK_WIDGET(self), TRUE);
     gtk_widget_set_vexpand(GTK_WIDGET(self), TRUE);
     gtk_widget_set_focusable(GTK_WIDGET(self), TRUE);
+    {
+        GtkEventController *motion = gtk_event_controller_motion_new();
+        GtkGesture *click = gtk_gesture_click_new();
+        g_signal_connect(motion, "enter", G_CALLBACK(on_motion), self);
+        g_signal_connect(motion, "motion", G_CALLBACK(on_motion), self);
+        g_signal_connect(motion, "leave", G_CALLBACK(on_leave), self);
+        gtk_widget_add_controller(GTK_WIDGET(self), motion);
+        gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(click), 0);   /* every button */
+        g_signal_connect(click, "pressed", G_CALLBACK(on_pressed), self);
+        g_signal_connect(click, "released", G_CALLBACK(on_released), self);
+        g_signal_connect(click, "cancel", G_CALLBACK(on_cancel), self);
+        gtk_widget_add_controller(GTK_WIDGET(self), GTK_EVENT_CONTROLLER(click));
+    }
 }
 
 GtkWidget *pmd85_display_new(pmd85session *session)

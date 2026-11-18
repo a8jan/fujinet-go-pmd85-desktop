@@ -103,6 +103,8 @@ typedef struct {
     int module;         /* PMD85SESSION_MODULE_* */
     int ram256k;        /* 2A/3: the 256 KB RAM expansion */
     int mif85;          /* MIF 85 music interface */
+    int mouse602;       /* Mouse 602 (85-1..3, Consul 2717), from the host
+                           pointer over the screen: pmd85session_mouse */
     int pmd32;          /* PMD 32 disk drive */
     int joystick;       /* 4004/482 joysticks on the GPIO ports, driven by
                            pmd85session_set_joystick (gamepads, frontends) */
@@ -228,6 +230,20 @@ void pmd85session_set_joystick(pmd85session *s, int port, unsigned bits);
  * not while the PMD 32 is connected), bit 1 joystick 2 (port B); 0 with the
  * joystick interface off. */
 unsigned pmd85session_joystick_held(pmd85session *s, int port);
+
+/* The host pointer over the PMD's screen, for the Mouse 602: x, y in the
+ * PMD's pixels (0..287, or 383 on a Consul 2717; 0..255), buttons
+ * PMD85SESSION_MOUSE_* held; inside 0 when it left the screen (it starts
+ * afresh where it comes back). The mouse moves by the difference, one step
+ * per two pixels. Nothing happens without a Mouse 602 (pmd85session_mouse_on). */
+enum {
+    PMD85SESSION_MOUSE_LEFT = 1,
+    PMD85SESSION_MOUSE_RIGHT = 2,
+    PMD85SESSION_MOUSE_MIDDLE = 4,   /* both, as upstream */
+};
+void pmd85session_mouse(pmd85session *s, int x, int y, unsigned buttons, int inside);
+/* 1 when the machine has a Mouse 602 now (on, and a model that takes it). */
+int  pmd85session_mouse_on(pmd85session *s);
 unsigned pmd85session_joysticks(pmd85session *s);
 
 /* ---- gamepads (SDL, hot-plug; started with the session) -------------------

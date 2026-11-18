@@ -49,6 +49,7 @@
 #include "IifTapeMato.h"
 #include "IifGPIO.h"
 #include "Mif85.h"
+#include "Mouse602.h"
 #include "Pmd32.h"
 #include "RomModule.h"
 #include "RomMegaModule.h"
@@ -218,6 +219,30 @@ int pmd85host_drain_keys(void (*sink)(int down, int usage))
 /* ---- joystick / state atomics --------------------------------------------- */
 
 static std::atomic<unsigned> g_joy[2];
+
+/* PMD pixels the pointer moves for one step of the mouse: upstream's is one
+ * (its screen multiplier); two felt right with PMD software -- half the speed. */
+#define MOUSE_PIXELS_PER_STEP 2
+
+/* The host pointer for the Mouse 602: written by any thread, taken by the
+ * emulator thread once a frame (mouse_service). */
+static std::mutex g_mouse_mtx;
+static struct {
+    int x, y;
+    unsigned buttons;
+    int inside;
+    unsigned serial;       /* bumped by every pmd85host_mouse */
+} g_mouse;
+
+void pmd85host_mouse(int x, int y, unsigned buttons, int inside)
+{
+    std::lock_guard<std::mutex> lk(g_mouse_mtx);
+    g_mouse.x = x;
+    g_mouse.y = y;
+    g_mouse.buttons = buttons;
+    g_mouse.inside = inside;
+    g_mouse.serial++;
+}
 static std::atomic<int> g_led{0};
 static std::atomic<int> g_mega_page{-1};
 
@@ -475,6 +500,7 @@ public:
     IifTape *ifTape;
     IifGPIO *ifGpio;
     Mif85 *mif85;
+    Mouse602 *mouse;
     CSAASound *saa;     /* the SAA1099 that mif85 made (see ~PmdMachine) */
     Pmd32 *pmd32;
     RomModule *romModule;
@@ -507,7 +533,7 @@ private:
 PmdMachine::PmdMachine(const pmd85host_config &c)
     : cfg(c), model((TComputerModel)c.model), cpu(nullptr), memory(nullptr),
       systemPIO(nullptr), ifTimer(nullptr), ifTape(nullptr), ifGpio(nullptr),
-      mif85(nullptr), saa(nullptr), pmd32(nullptr), romModule(nullptr), megaModule(nullptr),
+      mif85(nullptr), mouse(nullptr), saa(nullptr), pmd32(nullptr), romModule(nullptr), megaModule(nullptr),
       becker(nullptr), joystick(nullptr), mixer(c.volume), width384(false),
       blinkState(false), blinkFrames(0), frames(0), built(false),
       blinkingEnabled(false)
@@ -524,6 +550,11 @@ PmdMachine::~PmdMachine()
     /* the reverse of Build, mirroring TEmulator's destructor order */
     delete joystick;
     delete pmd32;  /* before ifGpio, whose signals it is connected to */
+    if (mouse) {
+        if (ifTimer) ifTimer->EnableMouse602(false);
+        cpu->TCyclesListeners.disconnect(mouse);
+        delete mouse;
+    }
     if (ifTimer) ifTimer->EnableMIF85(false, nullptr);
     if (mif85) {
         /* Upstream keeps the chip in the global SAA1099: each Mif85 makes
@@ -661,6 +692,15 @@ bool PmdMachine::Build()
         cpu->AddDevice(MIF85_ADR, MIF85_MASK, mif85, true);
         mixer.EnableMIF85(true);
         if (ifTimer) ifTimer->EnableMIF85(true, mif85);
+    }
+
+    /* ---- TEmulator::ConnectMouse602 ---- (timer 0's interrupt goes to it
+     * rather than to the MIF 85 then, as upstream) */
+    if (cfg.mouse602 && (model <= CM_V3 || model == CM_C2717)) {
+        mouse = new Mouse602(MOUSE_PIXELS_PER_STEP);   /* positions come in PMD pixels */
+        cpu->AddDevice(MOUSE_ADR, MOUSE_MASK, mouse, true);
+        cpu->TCyclesListeners.connect(&Mouse602::MouseService, mouse);
+        if (ifTimer) ifTimer->EnableMouse602(true);
     }
 
     /* ---- TEmulator::ConnectPMD32 ---- */
@@ -1486,6 +1526,68 @@ void pmd85host_core_stop(void)
     publish_state(nullptr);
 }
 
+/* The latest pointer into the Mouse 602 (emulator thread, between frames).
+ * Upstream's GUI hands it the position every frame the pointer is over the
+ * screen, with +1 / -1 for a button pressed / released; the device queues a
+ * quadrature cycle per pixel moved. A pointer that left the screen starts
+ * afresh where it comes back (SetMouseArea forgets the old position), so
+ * the PMD's pointer does not jump by the way it went round outside. */
+static void mouse_service(PmdMachine *m)
+{
+    static unsigned seen, held;
+    static int was_inside, last_x, last_y;
+    static PmdMachine *for_machine;
+    int x, y, inside;
+    unsigned buttons, serial;
+    {
+        std::lock_guard<std::mutex> lk(g_mouse_mtx);
+        x = g_mouse.x;
+        y = g_mouse.y;
+        buttons = g_mouse.buttons;
+        inside = g_mouse.inside;
+        serial = g_mouse.serial;
+    }
+    if (!m->mouse) {
+        for_machine = nullptr;
+        return;
+    }
+    if (for_machine != m) {          /* a new machine: a new mouse */
+        for_machine = m;
+        held = 0;
+        was_inside = 0;
+        seen = serial - 1;
+    }
+    if (serial == seen) return;
+    seen = serial;
+    if (!inside) {
+        /* buttons let go where the pointer last was: no move */
+        if (held && was_inside)
+            m->mouse->SetMouseState(last_x, last_y, (held & PMD85_MOUSE_LEFT) ? -1 : 0,
+                                    (held & PMD85_MOUSE_RIGHT) ? -1 : 0, 0);
+        held = 0;
+        was_inside = 0;
+        return;
+    }
+    if (!was_inside) {
+        /* the first position is the start: SetMouseState only notes it
+         * (buttons and all), so it is given once on its own */
+        m->mouse->SetMouseArea(MOUSE_PIXELS_PER_STEP);
+        m->mouse->SetMouseState(x, y, 0, 0, 0);
+        was_inside = 1;
+    }
+    last_x = x;
+    last_y = y;
+    /* upstream: the middle button presses both */
+    if (buttons & PMD85_MOUSE_MIDDLE) buttons |= PMD85_MOUSE_LEFT | PMD85_MOUSE_RIGHT;
+    {
+        const unsigned on = buttons & ~held, off = held & ~buttons;
+        m->mouse->SetMouseState(x, y,
+            (on & PMD85_MOUSE_LEFT) ? 1 : (off & PMD85_MOUSE_LEFT) ? -1 : 0,
+            (on & PMD85_MOUSE_RIGHT) ? 1 : (off & PMD85_MOUSE_RIGHT) ? -1 : 0, 0);
+    }
+    held = buttons;
+}
+
 void pmd85host_core_run_frame(void)
 {
     bool reset = false, reconfig = false;
@@ -1518,6 +1620,8 @@ void pmd85host_core_run_frame(void)
         int color = g_cmd_color.exchange(-1);
         if (color >= 0) g_machine->SetColorProfile(color);
     }
+
+    mouse_service(g_machine);
 
     g_tape_settings.flash = g_tape_flash.load() != 0;
     g_tape_settings.monitoring = g_tape_sound.load() != 0;
@@ -1672,6 +1776,7 @@ const char *pmd85host_port_name(uint8_t port)
     if ((model == CM_V2A || model == CM_V3) && m->cfg.ram256k && port == MM256_REG_ADR)
         return "MM256 page";
     if (m->mif85 && (port & MIF85_MASK) == MIF85_ADR) return "MIF 85";
+    if (m->mouse && (port & MOUSE_MASK) == MOUSE_ADR) return "Mouse 602";
     if (m->becker && (port & PMD85_BECKER_MASK) == PMD85_BECKER_ADR)
         return (port & 1) ? "BECKER data" : "BECKER status";
     if (m->romModule && (port & ROM_MODULE_MASK) == ROM_MODULE_ADR) return rom[port & 3];
