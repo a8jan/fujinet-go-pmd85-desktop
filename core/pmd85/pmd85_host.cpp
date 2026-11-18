@@ -1005,13 +1005,18 @@ TSettings *Settings = &g_settings_object;
 static TTapeBrowser *g_deck;              /* the emulator thread's */
 static std::string g_tape_path;           /* the emulator thread's */
 static std::atomic<int> g_tape_flash{1}, g_tape_sound{0};
+static std::atomic<int> g_tape_autostop{AS_NEXTHEAD};
 
-static std::mutex g_tape_state_mtx;
+static std::mutex g_tape_state_mtx;       /* these two: */
 static pmd85host_tape_state g_tape_state;
+static std::vector<pmd85host_tape_block> g_tape_list;
+static int g_tape_list_total = -1;        /* the emulator thread's */
 
 struct TapeRequest {
     int cmd = 0;
     std::string path;
+    int idx = -1;
+    std::vector<int> sel;
     bool pending = false, done = false;
     int rc = -1;
     std::string err;
@@ -1027,13 +1032,23 @@ void pmd85host_tape_options(int flash, int sound)
     g_tape_sound.store(sound ? 1 : 0);
 }
 
-int pmd85host_tape_command(int cmd, const char *path, char *err, int errsz)
+void pmd85host_tape_autostop(int mode)
+{
+    g_tape_autostop.store(mode == PMD85_TAPE_STOP_END ? AS_OFF
+                          : mode == PMD85_TAPE_STOP_MARKER ? AS_CURSOR : AS_NEXTHEAD);
+}
+
+static int tape_request(int cmd, const char *path, int idx, const int *sel, int nsel,
+                        char *err, int errsz)
 {
     std::lock_guard<std::mutex> one(g_tape_caller_mtx);
     std::unique_lock<std::mutex> lk(g_tape_req_mtx);
     g_tape_req = TapeRequest();
     g_tape_req.cmd = cmd;
     g_tape_req.path = path ? path : "";
+    g_tape_req.idx = idx;
+    if (sel && nsel > 0)
+        g_tape_req.sel.assign(sel, sel + nsel);
     g_tape_req.pending = true;
     if (!g_tape_req_cv.wait_for(lk, std::chrono::seconds(1),
                                 [] { return g_tape_req.done; })) {
@@ -1046,6 +1061,26 @@ int pmd85host_tape_command(int cmd, const char *path, char *err, int errsz)
     if (err && errsz > 0)
         snprintf(err, (size_t)errsz, "%s", g_tape_req.err.c_str());
     return g_tape_req.rc;
+}
+
+int pmd85host_tape_command(int cmd, const char *path, char *err, int errsz)
+{
+    return tape_request(cmd, path, -1, nullptr, 0, err, errsz);
+}
+
+int pmd85host_tape_edit(int cmd, int idx, const int *sel, int nsel, char *err, int errsz)
+{
+    return tape_request(cmd, nullptr, idx, sel, nsel, err, errsz);
+}
+
+int pmd85host_tape_blocks(pmd85host_tape_block *out, int max, unsigned *serial)
+{
+    std::lock_guard<std::mutex> lk(g_tape_state_mtx);
+    const int n = (int)g_tape_list.size();
+    for (int i = 0; out && i < n && i < max; i++)
+        out[i] = g_tape_list[i];
+    if (serial) *serial = g_tape_state.list_serial;
+    return n;
 }
 
 void pmd85host_tape_state_get(pmd85host_tape_state *out)
@@ -1066,9 +1101,115 @@ static void tape_attach(PmdMachine *m)
         g_deck->SetIfTape(m->ifTape);
 }
 
-static int tape_run(int cmd, const std::string &path, std::string &err)
+/* Upstream's block list works on blocks marked selected; the UI's selection
+ * is the one that counts, so the marks are set for an edit and cleared
+ * after it. */
+static void tape_select(TTapeBrowser *d, const std::vector<int> &sel)
+{
+    for (int i = 0; i < d->totalBlocks; i++)
+        d->GetBlock(i)->selected = false;
+    for (int i : sel)
+        if (i >= 0 && i < d->totalBlocks) d->DoSelection(i, true);
+    if (d->totalBlocks > 0)
+        d->DoSelection(0, d->GetBlock(0)->selected);   /* recounts */
+}
+
+static int tape_index(TTapeBrowser *d, const TTapeBrowser::TAPE_BLOCK *b)
+{
+    for (int i = 0; b && i < d->totalBlocks; i++)
+        if (d->GetBlock(i) == b) return i;
+    return -1;
+}
+
+/* After blocks moved: the position and the marker go with their blocks
+ * (upstream keeps the position's block, not its index). */
+static void tape_relocate(TTapeBrowser *d, const TTapeBrowser::TAPE_BLOCK *cur,
+                          const TTapeBrowser::TAPE_BLOCK *mark)
+{
+    int c = tape_index(d, cur), m = tape_index(d, mark);
+    d->SetCurrentBlock(-1);
+    d->SetCurrentBlock(c >= 0 ? c : (d->totalBlocks > 0 ? 0 : -1));
+    d->stopBlockIdx = (m > d->currBlockIdx) ? m : -1;
+}
+
+static int tape_edit(TTapeBrowser *d, const TapeRequest &req, std::string &err)
+{
+    const int idx = req.idx;
+    if (d->playing) {
+        err = "Stop the tape first";
+        return -1;
+    }
+    if (req.cmd != PMD85_TAPE_MARK && req.sel.empty() &&
+        (idx < 0 || idx >= d->totalBlocks)) {
+        err = "No such block";
+        return -1;
+    }
+    switch (req.cmd) {
+    case PMD85_TAPE_SEEK:
+        d->SetCurrentBlock(idx);
+        return 0;
+    case PMD85_TAPE_MARK:
+        if (idx >= 0 && (idx <= d->currBlockIdx || idx >= d->totalBlocks)) {
+            err = "The STOP marker goes after the tape's position";
+            return -1;
+        }
+        d->stopBlockIdx = idx < 0 ? -1 : idx;
+        return 0;
+    case PMD85_TAPE_DELETE: {
+        tape_select(d, req.sel);
+        TTapeBrowser::TAPE_BLOCK *mark = d->GetBlock(d->stopBlockIdx);
+        const bool markGoes = mark && (req.sel.empty() ? d->stopBlockIdx == idx
+                                                       : mark->selected);
+        if (markGoes) mark = nullptr;
+        d->DeleteSelected(req.sel.empty() ? idx : -1);
+        tape_select(d, {});
+        if (d->currBlockIdx < 0 || d->currBlockIdx >= d->totalBlocks) {
+            /* the last block went: back to the start */
+            d->SetCurrentBlock(-1);
+            if (d->totalBlocks > 0) d->SetCurrentBlock(0);
+        }
+        {
+            const int m = tape_index(d, mark);
+            d->stopBlockIdx = (m > d->currBlockIdx) ? m : -1;
+        }
+        return 0;
+    }
+    case PMD85_TAPE_MOVE_UP:
+    case PMD85_TAPE_MOVE_DOWN: {
+        const bool up = req.cmd == PMD85_TAPE_MOVE_UP;
+        tape_select(d, req.sel);
+        int first = idx, last = idx, cursor = idx;
+        if (!req.sel.empty()) {
+            if (!d->Selection->continuity) {
+                tape_select(d, {});
+                err = "Only blocks next to each other move together";
+                return -1;
+            }
+            first = d->Selection->first;
+            last = d->Selection->last;
+        }
+        if ((up && first == 0) || (!up && last >= d->totalBlocks - 1)) {
+            tape_select(d, {});
+            err = up ? "Already at the top" : "Already at the bottom";
+            return -1;
+        }
+        const TTapeBrowser::TAPE_BLOCK *cur = d->GetBlock(d->currBlockIdx);
+        const TTapeBrowser::TAPE_BLOCK *mark = d->GetBlock(d->stopBlockIdx);
+        d->MoveSelected(up, &cursor);
+        tape_relocate(d, cur, mark);
+        tape_select(d, {});
+        return 0;
+    }
+    }
+    err = "Unknown tape command";
+    return -1;
+}
+
+static int tape_run(const TapeRequest &req, std::string &err)
 {
     TTapeBrowser *d = g_deck;
+    const int cmd = req.cmd;
+    const std::string &path = req.path;
     int r;
 
     switch (cmd) {
@@ -1123,10 +1264,37 @@ static int tape_run(int cmd, const std::string &path, std::string &err)
         g_tape_path = path;
         return 0;
     }
+    case PMD85_TAPE_APPEND: {
+        if (d->totalBlocks == 0) {   /* onto no tape: that is a load */
+            TapeRequest load = req;
+            load.cmd = PMD85_TAPE_LOAD;
+            return tape_run(load, err);
+        }
+        const int before = d->totalBlocks;
+        r = d->ImportFileName(path.c_str());
+        if (r < 0 || d->totalBlocks == before) {
+            err = (r < 0 && !FileExists(path.c_str())) ? "Cannot open " + path
+                                                         : path + " is not a PMD 85 tape";
+            return -1;
+        }
+        if (r > 0) {
+            err = "The tape's end is damaged; the blocks before it are in";
+            return 1;
+        }
+        return 0;
+    }
+    case PMD85_TAPE_SEEK:
+    case PMD85_TAPE_MARK:
+    case PMD85_TAPE_DELETE:
+    case PMD85_TAPE_MOVE_UP:
+    case PMD85_TAPE_MOVE_DOWN:
+        return tape_edit(d, req, err);
     }
     err = "Unknown tape command";
     return -1;
 }
+
+static void tape_publish(void);
 
 /* The pending command, if any (emulator thread, between frames). */
 static void tape_service(void)
@@ -1140,8 +1308,9 @@ static void tape_service(void)
         g_tape_req.pending = false;
     }
     std::string err;
-    const int rc = g_deck ? tape_run(req.cmd, req.path, err) : -1;
+    const int rc = g_deck ? tape_run(req, err) : -1;
     if (!g_deck) err = "No tape deck";
+    tape_publish();   /* the caller sees the result when it returns */
     {
         std::lock_guard<std::mutex> lk(g_tape_req_mtx);
         g_tape_req.rc = rc;
@@ -1181,8 +1350,37 @@ static void tape_publish(void)
             snprintf(st.block, sizeof st.block, "..");
         }
         snprintf(st.path, sizeof st.path, "%s", g_tape_path.c_str());
+        st.marker = (d->stopBlockIdx > st.current && d->stopBlockIdx < d->totalBlocks)
+                    ? d->stopBlockIdx : -1;
     }
     std::lock_guard<std::mutex> lk(g_tape_state_mtx);
+    st.list_serial = g_tape_state.list_serial;
+    if (g_deck && (g_deck->shouldUpdateEntries || g_deck->totalBlocks != g_tape_list_total)) {
+        /* upstream's own list (FillFileList), which is what its dialog shows */
+        std::vector<TTapeBrowser::TDialogItem> items;
+        g_deck->FillFileList(items);
+        g_tape_list.clear();
+        for (size_t i = 0; i < items.size(); i++) {
+            const TTapeBrowser::TAPE_BLOCK *b = g_deck->GetBlock((int)i);
+            pmd85host_tape_block blk;
+            memset(&blk, 0, sizeof blk);
+            for (size_t k = 0; k + 1 < sizeof blk.name && items[i].name[k]; k++) {
+                const unsigned char ch = (unsigned char)items[i].name[k];
+                blk.name[k] = (ch < 0x20 || ch > 0x7E) ? '?' : (char)ch;
+            }
+            for (size_t k = strlen(blk.name); k > 0 && blk.name[k - 1] == ' '; k--)
+                blk.name[k - 1] = '\0';
+            blk.number = (b && b->cType) ? b->bNumber : -1;
+            blk.start = items[i].start;
+            /* a header holds the length less one (MGSV's start,end) */
+            blk.length = items[i].length + (b && b->cType ? 1 : 0);
+            blk.bad = items[i].headCrcError ? 1 : 0;
+            g_tape_list.push_back(blk);
+        }
+        g_deck->shouldUpdateEntries = false;
+        g_tape_list_total = g_deck->totalBlocks;
+        st.list_serial++;
+    }
     g_tape_state = st;
 }
 
@@ -1303,6 +1501,7 @@ void pmd85host_core_run_frame(void)
 
     g_tape_settings.flash = g_tape_flash.load() != 0;
     g_tape_settings.monitoring = g_tape_sound.load() != 0;
+    g_tape_settings.autoStop = (TAutoStopType)g_tape_autostop.load();
     tape_service();
 
     pmd85host_drain_keys(key_sink);

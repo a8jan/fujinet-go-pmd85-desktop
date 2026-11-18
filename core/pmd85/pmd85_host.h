@@ -195,24 +195,54 @@ enum {
     PMD85_TAPE_STOP,
     PMD85_TAPE_REWIND,     /* stop, back to the first block */
     PMD85_TAPE_SAVE,       /* path: every block as a .ptp; it becomes the tape */
+    PMD85_TAPE_APPEND,     /* path: that tape's blocks after these */
+    /* the block list (refused while the tape plays): */
+    PMD85_TAPE_SEEK,       /* idx: the block that plays next */
+    PMD85_TAPE_MARK,       /* idx: the STOP marker (after the position), -1 none */
+    PMD85_TAPE_DELETE,     /* the blocks in sel, or block idx when none */
+    PMD85_TAPE_MOVE_UP,    /* the blocks in sel (one run), or block idx */
+    PMD85_TAPE_MOVE_DOWN,
 };
 int pmd85host_tape_command(int cmd, const char *path, char *err, int errsz);
+/* The same, with the block list's arguments. */
+int pmd85host_tape_edit(int cmd, int idx, const int *sel, int nsel,
+                        char *err, int errsz);
 /* flash: blocks go into memory at once through the monitors' tape routines
  * (on by default); sound: the tape signal on the speaker while it plays.
  * Taken at the next frame; any thread. */
 void pmd85host_tape_options(int flash, int sound);
+/* Where a playing tape stops by itself (upstream's auto-stop). */
+enum {
+    PMD85_TAPE_STOP_END = 0,   /* at the tape's end */
+    PMD85_TAPE_STOP_HEADER,    /* before the next header block (default) */
+    PMD85_TAPE_STOP_MARKER,    /* at the STOP marker */
+};
+void pmd85host_tape_autostop(int mode);
 
 typedef struct {
     int  blocks;          /* 0: no tape */
     int  current;         /* the block that plays next, -1 none */
     int  playing;
-    int  recorded;        /* blocks were recorded and not saved yet */
+    int  recorded;        /* changed (recorded, edited) and not saved yet */
     int  progress, progress_max;   /* bytes of the current block */
     char block[24];       /* the current block: "016/? VLAK" or ".." (data) */
     char path[1024];      /* the tape file, "" when only recorded */
+    int  marker;          /* the STOP marker's block, -1 none */
+    unsigned list_serial; /* changes with the block list */
 } pmd85host_tape_state;
 /* As of the last frame. Any thread. */
 void pmd85host_tape_state_get(pmd85host_tape_state *out);
+
+typedef struct {
+    char name[16];        /* "016/? VLAK", ".." for a headerless block */
+    int  number;          /* the file number, -1 headerless */
+    int  start;           /* load address, -1 headerless */
+    int  length;          /* bytes in the body */
+    int  bad;             /* CRC or length error */
+} pmd85host_tape_block;
+/* The block list as of the last frame: up to max blocks into out, the
+ * number there are returned; *serial (may be NULL) gets its list_serial. */
+int pmd85host_tape_blocks(pmd85host_tape_block *out, int max, unsigned *serial);
 
 /* --- state for the frontends (any thread, relaxed) ------------------------- */
 int  pmd85host_led_state(void);    /* SystemPIO LED bits: 1 yellow 2 red 4 blue */

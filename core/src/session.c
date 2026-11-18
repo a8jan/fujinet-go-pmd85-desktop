@@ -602,8 +602,11 @@ int pmd85session_start(pmd85session *s, const pmd85session_start_opts *opts)
         if (tape && *tape && st.blocks == 0) {
             char path[PMD85_PATH_MAX];
             snprintf(path, sizeof path, "%s", tape);
-            if (pmd85host_tape_command(PMD85_TAPE_LOAD, path, NULL, 0) < 0)
+            char err[512] = "";
+            if (pmd85host_tape_command(PMD85_TAPE_LOAD, path, err, sizeof err) < 0) {
+                fprintf(stderr, "pmd85session: the tape %s is not back in: %s\n", path, err);
                 pmd85session_set_str(s, "tape_file", "");
+            }
         }
     }
 
@@ -840,6 +843,22 @@ static void apply_tape_options(pmd85session *s)
 {
     pmd85host_tape_options(pmd85session_get_int(s, "tape_flash", 1),
                            pmd85session_get_int(s, "tape_sound", 0));
+    pmd85host_tape_autostop(pmd85session_tape_autostop(s));
+}
+
+int pmd85session_tape_autostop(pmd85session *s)
+{
+    int m = s ? pmd85session_get_int(s, "tape_autostop", PMD85SESSION_TAPE_STOP_HEADER)
+              : PMD85SESSION_TAPE_STOP_HEADER;
+    return (m >= PMD85SESSION_TAPE_STOP_END && m <= PMD85SESSION_TAPE_STOP_MARKER)
+           ? m : PMD85SESSION_TAPE_STOP_HEADER;
+}
+
+void pmd85session_set_tape_autostop(pmd85session *s, int mode)
+{
+    if (!s) return;
+    pmd85session_set_int(s, "tape_autostop", mode);
+    apply_tape_options(s);
 }
 
 void pmd85session_set_tape_options(pmd85session *s, int flash, int sound)
@@ -885,6 +904,72 @@ int pmd85session_tape_play(pmd85session *s)   { return tape_cmd(s, PMD85_TAPE_PL
 int pmd85session_tape_stop(pmd85session *s)   { return tape_cmd(s, PMD85_TAPE_STOP, NULL); }
 int pmd85session_tape_rewind(pmd85session *s) { return tape_cmd(s, PMD85_TAPE_REWIND, NULL); }
 
+int pmd85session_tape_append(pmd85session *s, const char *path)
+{
+    pmd85host_tape_state st;
+    int rc;
+    pmd85host_tape_state_get(&st);
+    rc = tape_cmd(s, PMD85_TAPE_APPEND, path);
+    if (rc >= 0 && st.blocks == 0)  /* onto no tape: loaded */
+        pmd85session_set_str(s, "tape_file", path);
+    return rc;
+}
+
+static int tape_edit(pmd85session *s, int cmd, int idx, const int *sel, int nsel)
+{
+    char err[512] = "";
+    int rc;
+    if (!s) return -1;
+    if (!s->running) {
+        session_set_error(s, "The PMD is not running");
+        return -1;
+    }
+    rc = pmd85host_tape_edit(cmd, idx, sel, nsel, err, sizeof err);
+    if (rc != 0)
+        session_set_error(s, "%s", err);
+    return rc;
+}
+
+int pmd85session_tape_seek(pmd85session *s, int idx)
+{
+    return tape_edit(s, PMD85_TAPE_SEEK, idx, NULL, 0);
+}
+
+int pmd85session_tape_mark(pmd85session *s, int idx)
+{
+    return tape_edit(s, PMD85_TAPE_MARK, idx, NULL, 0);
+}
+
+int pmd85session_tape_delete(pmd85session *s, int idx, const int *sel, int nsel)
+{
+    return tape_edit(s, PMD85_TAPE_DELETE, idx, sel, nsel);
+}
+
+int pmd85session_tape_move(pmd85session *s, int up, int idx, const int *sel, int nsel)
+{
+    return tape_edit(s, up ? PMD85_TAPE_MOVE_UP : PMD85_TAPE_MOVE_DOWN, idx, sel, nsel);
+}
+
+int pmd85session_tape_blocks(pmd85session *s, pmd85session_tape_block *out, int max,
+                             unsigned *serial)
+{
+    pmd85host_tape_block *tmp = NULL;
+    int n;
+    (void)s;
+    if (out && max > 0 && !(tmp = calloc((size_t)max, sizeof *tmp)))
+        return 0;
+    n = pmd85host_tape_blocks(tmp, tmp ? max : 0, serial);
+    for (int i = 0; tmp && i < n && i < max; i++) {
+        memcpy(out[i].name, tmp[i].name, sizeof out[i].name);
+        out[i].number = tmp[i].number;
+        out[i].start = tmp[i].start;
+        out[i].length = tmp[i].length;
+        out[i].bad = tmp[i].bad;
+    }
+    free(tmp);
+    return n;
+}
+
 int pmd85session_tape_save(pmd85session *s, const char *path)
 {
     int rc = tape_cmd(s, PMD85_TAPE_SAVE, path);
@@ -909,6 +994,8 @@ void pmd85session_tape_get_info(pmd85session *s, pmd85session_tape_info *out)
     out->progress_max = st.progress_max;
     snprintf(out->block, sizeof out->block, "%s", st.block);
     snprintf(out->path, sizeof out->path, "%s", st.path);
+    out->marker = st.marker;
+    out->list_serial = st.list_serial;
 }
 
 int pmd85session_fujinet_restart(pmd85session *s)

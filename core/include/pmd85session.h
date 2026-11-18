@@ -270,6 +270,28 @@ int  pmd85session_tape_play(pmd85session *s);
 int  pmd85session_tape_stop(pmd85session *s);
 int  pmd85session_tape_rewind(pmd85session *s);
 int  pmd85session_tape_save(pmd85session *s, const char *path);
+/* That tape's blocks after these (a load when the deck is empty). */
+int  pmd85session_tape_append(pmd85session *s, const char *path);
+
+/* The block list (upstream's tape browser). Refused while the tape plays.
+ * sel: the blocks selected (nsel of them); with none, block idx. Edits
+ * leave the tape changed (info.recorded) until it is saved. */
+int  pmd85session_tape_seek(pmd85session *s, int idx);     /* plays next */
+int  pmd85session_tape_mark(pmd85session *s, int idx);     /* STOP marker, -1 off */
+int  pmd85session_tape_delete(pmd85session *s, int idx, const int *sel, int nsel);
+int  pmd85session_tape_move(pmd85session *s, int up, int idx, const int *sel, int nsel);
+
+typedef struct {
+    char name[16];        /* "016/? VLAK", ".." for a headerless block */
+    int  number;          /* file number, -1 headerless */
+    int  start;           /* load address, -1 headerless */
+    int  length;          /* bytes in the body */
+    int  bad;             /* CRC or length error */
+} pmd85session_tape_block;
+/* Up to max blocks into out; returns how many there are. *serial (may be
+ * NULL) changes whenever the list does (see info.list_serial). */
+int  pmd85session_tape_blocks(pmd85session *s, pmd85session_tape_block *out, int max,
+                              unsigned *serial);
 
 typedef struct {
     int  blocks;          /* 0: no tape */
@@ -279,6 +301,8 @@ typedef struct {
     int  progress, progress_max;   /* bytes of the current block */
     char block[24];       /* the current block: "016/? VLAK", ".." raw data */
     char path[1024];      /* the tape's file, "" when only recorded */
+    int  marker;          /* the STOP marker's block, -1 none */
+    unsigned list_serial; /* changes with the block list */
 } pmd85session_tape_info;
 void pmd85session_tape_get_info(pmd85session *s, pmd85session_tape_info *out);
 
@@ -287,6 +311,15 @@ void pmd85session_tape_get_info(pmd85session *s, pmd85session_tape_info *out);
  * real time. Tape sound ("tape_sound", off): the signal on the speaker
  * while the tape plays. Both take effect at once and persist. */
 void pmd85session_set_tape_options(pmd85session *s, int flash, int sound);
+
+/* Where a playing tape stops by itself (setting "tape_autostop"). */
+enum {
+    PMD85SESSION_TAPE_STOP_END = 0,   /* at the tape's end */
+    PMD85SESSION_TAPE_STOP_HEADER,    /* before the next file (default) */
+    PMD85SESSION_TAPE_STOP_MARKER,    /* at the STOP marker */
+};
+void pmd85session_set_tape_autostop(pmd85session *s, int mode);
+int  pmd85session_tape_autostop(pmd85session *s);
 
 /* ---- media and paths ------------------------------------------------------ */
 

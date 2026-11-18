@@ -7,7 +7,9 @@
  *     rebuilt machine -- the tape stays in the deck across the rebuild;
  *   - recording: MGSV 07 7000,70FF into an empty deck, Save As a .ptp, and
  *     the file holds header #7 and the bytes;
- *   - the commands' errors (no tape, not a tape).
+ *   - the commands' errors (no tape, not a tape);
+ *   - the block list: seek, STOP marker, move, delete, append, and a
+ *     saved edit loads back in its new order.
  *
  * Frames run on a thread of their own, as in the app: the deck's commands
  * are carried out between frames and wait for that.
@@ -150,13 +152,12 @@ static int memory_has_pattern(uint16_t at)
 
 static void put16(FILE *f, unsigned v) { fputc(v & 0xFF, f); fputc(v >> 8, f); }
 
-/* A .ptp: [63][FF*16 00*16 55*16, header 14 + CRC], [len][256 bytes + CRC]. */
-static int write_tape(const char *path)
+/* A .ptp file: [63][FF*16 00*16 55*16, header 14 + CRC], [len][256 bytes + CRC]. */
+static void write_file(FILE *f, int number, const char *name)
 {
-    FILE *f = fopen(path, "wb");
-    uint8_t h[15] = { 5, '?', 0x00, 0x70, 0xFF, 0x00, 'T', 'E', 'S', 'T', ' ', ' ', ' ', ' ', 0 };
+    uint8_t h[15] = { (uint8_t)number, '?', 0x00, 0x70, 0xFF, 0x00, ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', 0 };
     uint8_t crc = 0;
-    if (!f) return -1;
+    memcpy(h + 6, name, strlen(name) < 8 ? strlen(name) : 8);
     for (int i = 0; i < 14; i++) crc += h[i];
     h[14] = crc;
     put16(f, 63);
@@ -168,13 +169,52 @@ static int write_tape(const char *path)
     crc = 0;
     for (int i = 0; i < 256; i++) { fputc(pattern(i), f); crc += pattern(i); }
     fputc(crc, f);
+}
+
+static int write_tape(const char *path)
+{
+    FILE *f = fopen(path, "wb");
+    if (!f) return -1;
+    write_file(f, 5, "TEST");
     fclose(f);
     return 0;
 }
 
+/* files #1 A, #2 B, #3 C */
+static int write_abc(const char *path)
+{
+    FILE *f = fopen(path, "wb");
+    if (!f) return -1;
+    write_file(f, 1, "A");
+    write_file(f, 2, "B");
+    write_file(f, 3, "C");
+    fclose(f);
+    return 0;
+}
+
+/* the deck's file numbers in order, as "1 2 3" */
+static const char *order(void)
+{
+    static char out[64];
+    pmd85host_tape_block b[16];
+    int n = pmd85host_tape_blocks(b, 16, NULL), k = 0;
+    out[0] = '\0';
+    for (int i = 0; i < n && i < 16; i++)
+        k += snprintf(out + k, sizeof out - (size_t)k, "%s%d", i ? " " : "", b[i].number);
+    return out;
+}
+
+static int edit(int cmd, int idx, const int *sel, int nsel)
+{
+    char err[256] = "";
+    int rc = pmd85host_tape_edit(cmd, idx, sel, nsel, err, sizeof err);
+    if (rc < 0) fprintf(stderr, "  (tape edit %d: %s)\n", cmd, err);
+    return rc;
+}
+
 int main(void)
 {
-    char tapefile[1200], saved[1200], junk[1200], romdir[900];
+    char tapefile[1200], saved[1200], junk[1200], abc[1200], edited[1200], romdir[900];
     pmd85host_config c;
     pmd85host_tape_state st;
 
@@ -191,7 +231,9 @@ int main(void)
     snprintf(tapefile, sizeof tapefile, "%s/test.ptp", g_dir);
     snprintf(saved, sizeof saved, "%s/saved.ptp", g_dir);
     snprintf(junk, sizeof junk, "%s/junk.ptp", g_dir);
-    if (write_tape(tapefile) != 0) return 77;
+    snprintf(abc, sizeof abc, "%s/abc.ptp", g_dir);
+    snprintf(edited, sizeof edited, "%s/edited.ptp", g_dir);
+    if (write_tape(tapefile) != 0 || write_abc(abc) != 0) return 77;
     {
         FILE *f = fopen(junk, "wb");
         fputs("not a tape", f);
@@ -296,6 +338,72 @@ int main(void)
             CHECK(same, "saved body is not the bytes from 7000h");
         }
     }
+
+    /* the block list: seek, marker, move, delete, append, save */
+    run_start();
+    CHECK(tape(PMD85_TAPE_LOAD, abc) == 0, "LOAD abc");
+    wait_frames(2);
+    CHECK(!strcmp(order(), "1 2 3"), "abc: %s", order());
+    {
+        pmd85host_tape_block b[4];
+        int n = pmd85host_tape_blocks(b, 4, NULL);
+        CHECK(n == 3 && !strcmp(b[1].name, "002/? B") && b[1].start == 0x7000 &&
+              b[1].length == 256 && b[1].number == 2 && !b[1].bad, "block 1: '%s' %d %d %d", b[1].name,
+              b[1].start, b[1].length, b[1].bad);
+    }
+    CHECK(edit(PMD85_TAPE_SEEK, 1, NULL, 0) == 0, "SEEK 1");
+    CHECK(edit(PMD85_TAPE_MARK, 0, NULL, 0) < 0, "a marker before the position");
+    CHECK(edit(PMD85_TAPE_MARK, 2, NULL, 0) == 0, "MARK 2");
+    wait_frames(2);
+    pmd85host_tape_state_get(&st);
+    CHECK(st.current == 1 && st.marker == 2 && !st.recorded, "at %d, marker %d, changed %d",
+          st.current, st.marker, st.recorded);
+    {
+        /* #2 (the position) up to the top: position and marker follow */
+        unsigned before, after;
+        pmd85host_tape_blocks(NULL, 0, &before);
+        CHECK(edit(PMD85_TAPE_MOVE_UP, 1, NULL, 0) == 0, "MOVE UP");
+        wait_frames(2);
+        pmd85host_tape_blocks(NULL, 0, &after);
+        CHECK(before != after, "the list serial did not change");
+    }
+    pmd85host_tape_state_get(&st);
+    CHECK(!strcmp(order(), "2 1 3"), "after move up: %s", order());
+    CHECK(st.current == 0 && st.marker == 2 && st.recorded, "after move: at %d, marker %d, "
+          "changed %d", st.current, st.marker, st.recorded);
+    CHECK(edit(PMD85_TAPE_MOVE_UP, 0, NULL, 0) < 0, "moved above the top");
+    {
+        const int gap[] = { 0, 2 }, run[] = { 0, 1 };
+        CHECK(edit(PMD85_TAPE_MOVE_DOWN, -1, gap, 2) < 0, "moved a split selection");
+        CHECK(edit(PMD85_TAPE_MOVE_DOWN, -1, run, 2) == 0, "MOVE DOWN 0-1");
+        wait_frames(2);
+        CHECK(!strcmp(order(), "3 2 1"), "after move down: %s", order());
+        pmd85host_tape_state_get(&st);
+        CHECK(st.current == 1 && st.marker < 0, "after move down: at %d, marker %d",
+              st.current, st.marker);   /* the marker's #3 went before the position */
+    }
+    {
+        const int sel[] = { 0, 2 };
+        CHECK(edit(PMD85_TAPE_DELETE, -1, sel, 2) == 0, "DELETE 0,2");
+        wait_frames(2);
+        CHECK(!strcmp(order(), "2"), "after delete: %s", order());
+        pmd85host_tape_state_get(&st);
+        CHECK(st.blocks == 1 && st.current == 0, "after delete: %d blocks, at %d", st.blocks,
+              st.current);
+    }
+    CHECK(tape(PMD85_TAPE_APPEND, junk) < 0, "appended a non-tape");
+    CHECK(tape(PMD85_TAPE_APPEND, abc) == 0, "APPEND abc");
+    wait_frames(2);
+    CHECK(!strcmp(order(), "2 1 2 3"), "after append: %s", order());
+    CHECK(tape(PMD85_TAPE_SAVE, edited) == 0, "SAVE edited");
+    CHECK(tape(PMD85_TAPE_EJECT, NULL) == 0, "EJECT");
+    CHECK(tape(PMD85_TAPE_LOAD, edited) == 0, "LOAD edited");
+    wait_frames(2);
+    CHECK(!strcmp(order(), "2 1 2 3"), "saved and loaded: %s", order());
+    CHECK(tape(PMD85_TAPE_PLAY, NULL) == 0, "PLAY");
+    CHECK(edit(PMD85_TAPE_DELETE, 0, NULL, 0) < 0, "an edit while playing");
+    CHECK(tape(PMD85_TAPE_STOP, NULL) == 0, "STOP");
+    run_stop();
 
     pmd85host_core_stop();
     test_rmtree(g_dir);

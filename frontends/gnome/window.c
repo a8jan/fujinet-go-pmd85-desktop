@@ -1,7 +1,8 @@
 /*
  * Pmd85Window: main window of the GNOME frontend. Header bar + menu over the
  * emulator display; keyboard capture routes every key to the PMD 85 except
- * F12 (the debugger) and Ctrl+Shift+F (fullscreen).
+ * F12 (the debugger), Ctrl+Shift+F (fullscreen) and Ctrl+Shift+T (the tape
+ * browser).
  *
  * The PMD keeps more of the keyboard than the other family apps: its function
  * keys K0..K10 are F1..F11 (FujiNet CONFIG boots with K10 = F11), so neither
@@ -25,6 +26,7 @@
 #include "display.h"
 #include "prefs.h"
 #include "fujilog.h"
+#include "tape.h"
 
 struct _Pmd85Window {
     AdwApplicationWindow parent_instance;
@@ -96,6 +98,8 @@ static void tape_actions(Pmd85Window *self, const pmd85session_tape_info *t)
     set_enabled(self, "tape-play", t->blocks > 0 && !t->playing);
     set_enabled(self, "tape-stop", t->playing);
     set_enabled(self, "tape-rewind", t->blocks > 0);
+    set_enabled(self, "tape-prev", pmd85_window_tape_file(self, -1) >= 0);
+    set_enabled(self, "tape-next", pmd85_window_tape_file(self, 1) >= 0);
     set_enabled(self, "tape-eject", t->blocks > 0);
     set_enabled(self, "tape-save", t->blocks > 0);
 }
@@ -184,6 +188,14 @@ static gboolean window_key(Pmd85Window *self, guint keyval,
     if (keyval == GDK_KEY_F12) {
         if (down)
             pmd85_debugger_toggle(GTK_WINDOW(self), self->session);
+        return TRUE;
+    }
+
+    /* Ctrl+Shift+T: the tape browser (its release, too, stays here) */
+    if ((keyval == GDK_KEY_T || keyval == GDK_KEY_t) &&
+        (state & GDK_CONTROL_MASK) && (state & GDK_SHIFT_MASK)) {
+        if (down)
+            pmd85_tape_window_show(self, self->session);
         return TRUE;
     }
 
@@ -419,19 +431,22 @@ static void action_fullscreen(GSimpleAction *action, GVariant *param,
 
 /* ---- the tape deck ------------------------------------------------------- */
 
-static void tape_load_done(GObject *source, GAsyncResult *result, gpointer user_data)
+static void tape_open_finish(Pmd85Window *self, GObject *source, GAsyncResult *result,
+                             gboolean append)
 {
-    Pmd85Window *self = PMD85_WINDOW(user_data);
     g_autoptr(GFile) file =
         gtk_file_dialog_open_finish(GTK_FILE_DIALOG(source), result, NULL);
     g_autofree char *path = file ? g_file_get_path(file) : NULL;
     g_autofree char *base = NULL, *msg = NULL;
     pmd85session_tape_info t;
-    int rc;
+    int before, rc;
 
     if (!path)
         return;
-    rc = pmd85session_tape_load(self->session, path);
+    pmd85session_tape_get_info(self->session, &t);
+    before = t.blocks;
+    rc = append ? pmd85session_tape_append(self->session, path)
+                : pmd85session_tape_load(self->session, path);
     if (rc < 0) {
         pmd85_window_toast(self, pmd85session_last_error(self->session));
         return;
@@ -440,10 +455,23 @@ static void tape_load_done(GObject *source, GAsyncResult *result, gpointer user_
     base = g_path_get_basename(path);
     if (rc > 0)
         msg = g_strdup_printf("%s: %s", base, pmd85session_last_error(self->session));
+    else if (append && before > 0)
+        msg = g_strdup_printf("%s: %d file%s added to the tape", base, t.blocks - before,
+                              t.blocks - before == 1 ? "" : "s");
     else
         msg = g_strdup_printf("Tape: %s, %d file%s. Load it on the PMD (e.g. MGLD nn), "
                               "then Play", base, t.blocks, t.blocks == 1 ? "" : "s");
     pmd85_window_toast(self, msg);
+}
+
+static void tape_load_done(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+    tape_open_finish(PMD85_WINDOW(user_data), source, result, FALSE);
+}
+
+static void tape_append_done(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+    tape_open_finish(PMD85_WINDOW(user_data), source, result, TRUE);
 }
 
 static GtkFileDialog *tape_dialog(Pmd85Window *self, const char *title)
@@ -474,14 +502,19 @@ static GtkFileDialog *tape_dialog(Pmd85Window *self, const char *title)
     return dialog;
 }
 
+void pmd85_window_tape_open(Pmd85Window *self, GtkWindow *parent, gboolean append)
+{
+    GtkFileDialog *dialog = tape_dialog(self, append ? "Append Tape" : "Load Tape");
+    gtk_file_dialog_open(dialog, parent ? parent : GTK_WINDOW(self), NULL,
+                         append ? tape_append_done : tape_load_done, self);
+    g_object_unref(dialog);
+}
+
 static void action_tape_load(GSimpleAction *action, GVariant *param, gpointer user_data)
 {
-    Pmd85Window *self = PMD85_WINDOW(user_data);
-    GtkFileDialog *dialog = tape_dialog(self, "Load Tape");
     (void)action;
     (void)param;
-    gtk_file_dialog_open(dialog, GTK_WINDOW(self), NULL, tape_load_done, self);
-    g_object_unref(dialog);
+    pmd85_window_tape_open(PMD85_WINDOW(user_data), NULL, FALSE);
 }
 
 static void tape_save_done(GObject *source, GAsyncResult *result, gpointer user_data)
@@ -511,18 +544,23 @@ static void tape_save_done(GObject *source, GAsyncResult *result, gpointer user_
     pmd85_window_toast(self, msg);
 }
 
-static void action_tape_save(GSimpleAction *action, GVariant *param, gpointer user_data)
+void pmd85_window_tape_save(Pmd85Window *self, GtkWindow *parent)
 {
-    Pmd85Window *self = PMD85_WINDOW(user_data);
     GtkFileDialog *dialog = tape_dialog(self, "Save Tape As");
     pmd85session_tape_info t;
-    (void)action;
-    (void)param;
     pmd85session_tape_get_info(self->session, &t);
     if (!t.path[0])
         gtk_file_dialog_set_initial_name(dialog, "tape.ptp");
-    gtk_file_dialog_save(dialog, GTK_WINDOW(self), NULL, tape_save_done, self);
+    gtk_file_dialog_save(dialog, parent ? parent : GTK_WINDOW(self), NULL,
+                         tape_save_done, self);
     g_object_unref(dialog);
+}
+
+static void action_tape_save(GSimpleAction *action, GVariant *param, gpointer user_data)
+{
+    (void)action;
+    (void)param;
+    pmd85_window_tape_save(PMD85_WINDOW(user_data), NULL);
 }
 
 static void tape_result(Pmd85Window *self, int rc, const char *done)
@@ -557,28 +595,103 @@ static void action_tape_rewind(GSimpleAction *action, GVariant *param, gpointer 
     tape_result(self, pmd85session_tape_rewind(self->session), "Tape rewound");
 }
 
+/* The previous or next file on the tape (a header block; the data blocks
+ * a program loads by itself are passed over), -1 none. */
+int pmd85_window_tape_file(Pmd85Window *self, int delta)
+{
+    pmd85session_tape_info t;
+    pmd85session_tape_block *b;
+    int n, to = -1;
+    pmd85session_tape_get_info(self->session, &t);
+    if (t.blocks == 0)
+        return -1;
+    b = g_new0(pmd85session_tape_block, t.blocks);
+    n = pmd85session_tape_blocks(self->session, b, t.blocks, NULL);
+    if (n > t.blocks) n = t.blocks;
+    for (int i = t.current + delta; i >= 0 && i < n; i += delta)
+        if (b[i].number >= 0) {
+            to = i;
+            break;
+        }
+    g_free(b);
+    return to;
+}
+
+/* the previous or next file as the tape's position */
+int pmd85_window_tape_step(Pmd85Window *self, int delta)
+{
+    pmd85session_tape_info t;
+    const int to = pmd85_window_tape_file(self, delta);
+    if (to < 0)
+        return -1;
+    pmd85session_tape_get_info(self->session, &t);
+    if (t.playing)
+        pmd85session_tape_stop(self->session);
+    return pmd85session_tape_seek(self->session, to);
+}
+
+static void tape_step(Pmd85Window *self, int delta)
+{
+    pmd85session_tape_info t;
+    if (pmd85_window_tape_step(self, delta) != 0)
+        return;
+    pmd85session_tape_get_info(self->session, &t);
+    {
+        g_autofree char *msg = g_strdup_printf("Tape at %s (%d of %d)", t.block,
+                                               t.current + 1, t.blocks);
+        pmd85_window_toast(self, msg);
+    }
+}
+
+static void action_tape_prev(GSimpleAction *action, GVariant *param, gpointer user_data)
+{
+    (void)action;
+    (void)param;
+    tape_step(PMD85_WINDOW(user_data), -1);
+}
+
+static void action_tape_next(GSimpleAction *action, GVariant *param, gpointer user_data)
+{
+    (void)action;
+    (void)param;
+    tape_step(PMD85_WINDOW(user_data), 1);
+}
+
+static void action_tape_append(GSimpleAction *action, GVariant *param, gpointer user_data)
+{
+    (void)action;
+    (void)param;
+    pmd85_window_tape_open(PMD85_WINDOW(user_data), NULL, TRUE);
+}
+
+static void action_tape_browser(GSimpleAction *action, GVariant *param, gpointer user_data)
+{
+    Pmd85Window *self = PMD85_WINDOW(user_data);
+    (void)action;
+    (void)param;
+    pmd85_tape_window_show(self, self->session);
+}
+
 static void tape_eject_response(AdwAlertDialog *dialog, const char *response,
                                 gpointer user_data)
 {
     Pmd85Window *self = PMD85_WINDOW(user_data);
-    (void)dialog;
-    if (!strcmp(response, "save"))
-        action_tape_save(NULL, NULL, self);
+    if (!strcmp(response, "save")) {
+        GtkWidget *parent = g_object_get_data(G_OBJECT(dialog), "pmd85-parent");
+        pmd85_window_tape_save(self, parent ? GTK_WINDOW(parent) : NULL);
+    }
     else if (!strcmp(response, "eject"))
         tape_result(self, pmd85session_tape_eject(self->session), "Tape ejected");
 }
 
-static void action_tape_eject(GSimpleAction *action, GVariant *param, gpointer user_data)
+void pmd85_window_tape_eject(Pmd85Window *self, GtkWidget *parent)
 {
-    Pmd85Window *self = PMD85_WINDOW(user_data);
     pmd85session_tape_info t;
-    (void)action;
-    (void)param;
     pmd85session_tape_get_info(self->session, &t);
     if (t.recorded) {
         /* what the PMD saved to tape is only in the deck so far */
         AdwDialog *d = adw_alert_dialog_new("Eject the Tape?",
-            "The tape has recordings that are not saved to a file.");
+            "The tape has recordings or changes that are not saved to a file.");
         adw_alert_dialog_add_responses(ADW_ALERT_DIALOG(d), "cancel", "_Cancel",
                                        "save", "_Save As\xe2\x80\xa6",
                                        "eject", "_Eject", NULL);
@@ -587,10 +700,18 @@ static void action_tape_eject(GSimpleAction *action, GVariant *param, gpointer u
         adw_alert_dialog_set_default_response(ADW_ALERT_DIALOG(d), "cancel");
         adw_alert_dialog_set_close_response(ADW_ALERT_DIALOG(d), "cancel");
         g_signal_connect(d, "response", G_CALLBACK(tape_eject_response), self);
-        adw_dialog_present(d, GTK_WIDGET(self));
+        g_object_set_data(G_OBJECT(d), "pmd85-parent", parent);
+        adw_dialog_present(d, parent ? parent : GTK_WIDGET(self));
         return;
     }
     tape_result(self, pmd85session_tape_eject(self->session), "Tape ejected");
+}
+
+static void action_tape_eject(GSimpleAction *action, GVariant *param, gpointer user_data)
+{
+    (void)action;
+    (void)param;
+    pmd85_window_tape_eject(PMD85_WINDOW(user_data), NULL);
 }
 
 /* ---- FujiNet's SD card ---------------------------------------------------- */
@@ -815,11 +936,14 @@ static GMenu *build_menu(void)
     g_object_unref(sub);
     {
         GMenu *tape = g_menu_new(), *deck = g_menu_new(), *file = g_menu_new();
+        g_menu_append(file, "Tape Browser (Ctrl+Shift+T)", "win.tape-browser");
         g_menu_append(file, "Load Tape\xe2\x80\xa6", "win.tape-load");
         g_menu_append(file, "Save Tape As\xe2\x80\xa6", "win.tape-save");
         g_menu_append_section(tape, NULL, G_MENU_MODEL(file));
         g_menu_append(deck, "Play", "win.tape-play");
         g_menu_append(deck, "Stop", "win.tape-stop");
+        g_menu_append(deck, "Previous File", "win.tape-prev");
+        g_menu_append(deck, "Next File", "win.tape-next");
         g_menu_append(deck, "Rewind", "win.tape-rewind");
         g_menu_append(deck, "Eject", "win.tape-eject");
         g_menu_append_section(tape, NULL, G_MENU_MODEL(deck));
@@ -872,6 +996,10 @@ static const GActionEntry win_actions[] = {
     {.name = "tape-rewind", .activate = action_tape_rewind},
     {.name = "tape-eject", .activate = action_tape_eject},
     {.name = "tape-save", .activate = action_tape_save},
+    {.name = "tape-append", .activate = action_tape_append},
+    {.name = "tape-prev", .activate = action_tape_prev},
+    {.name = "tape-next", .activate = action_tape_next},
+    {.name = "tape-browser", .activate = action_tape_browser},
     {.name = "fujinet-config", .activate = action_fujinet_config},
     {.name = "fujinet-log", .activate = action_fujinet_log},
     {.name = "preferences", .activate = action_preferences},
