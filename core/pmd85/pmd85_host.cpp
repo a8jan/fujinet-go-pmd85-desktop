@@ -469,6 +469,7 @@ public:
     IifTape *ifTape;
     IifGPIO *ifGpio;
     Mif85 *mif85;
+    CSAASound *saa;     /* the SAA1099 that mif85 made (see ~PmdMachine) */
     Pmd32 *pmd32;
     RomModule *romModule;
     RomMegaModule *megaModule;
@@ -497,7 +498,7 @@ private:
 PmdMachine::PmdMachine(const pmd85host_config &c)
     : cfg(c), model((TComputerModel)c.model), cpu(nullptr), memory(nullptr),
       systemPIO(nullptr), ifTimer(nullptr), ifTape(nullptr), ifGpio(nullptr),
-      mif85(nullptr), pmd32(nullptr), romModule(nullptr), megaModule(nullptr),
+      mif85(nullptr), saa(nullptr), pmd32(nullptr), romModule(nullptr), megaModule(nullptr),
       becker(nullptr), joystick(nullptr), mixer(c.volume), width384(false),
       blinkState(false), blinkFrames(0), frames(0), built(false),
       blinkingEnabled(false)
@@ -515,7 +516,16 @@ PmdMachine::~PmdMachine()
     delete joystick;
     delete pmd32;  /* before ifGpio, whose signals it is connected to */
     if (ifTimer) ifTimer->EnableMIF85(false, nullptr);
-    delete mif85;
+    if (mif85) {
+        /* Upstream keeps the chip in the global SAA1099: each Mif85 makes
+         * one and deletes "the" one. A rebuild makes the new machine before
+         * this one goes, so the global is the new machine's by now -- point
+         * it at ours for the delete and give theirs back after. */
+        CSAASound *current = SAA1099;
+        SAA1099 = saa;
+        delete mif85;
+        SAA1099 = (current == saa) ? nullptr : current;
+    }
     delete becker;
     delete romModule;  /* megaModule is the same object when present */
     delete cpu;
@@ -638,6 +648,7 @@ bool PmdMachine::Build()
     /* ---- TEmulator::ConnectMIF85 ---- */
     if (cfg.mif85 && model <= CM_V3) {
         mif85 = new Mif85();
+        saa = SAA1099;
         cpu->AddDevice(MIF85_ADR, MIF85_MASK, mif85, true);
         mixer.EnableMIF85(true);
         if (ifTimer) ifTimer->EnableMIF85(true, mif85);

@@ -171,3 +171,7 @@ target_compile_definitions(drivewire_smoke PRIVATE
   PMD85_DEV_FUJINET_OUT="${CMAKE_SOURCE_DIR}/tools/fujinet/work/out")
 add_test(NAME drivewire_smoke COMMAND drivewire_smoke)
 set_tests_properties(drivewire_smoke PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
+add_executable(rebuild_test tests/rebuild_test.c)
+target_link_libraries(rebuild_test pmd85session)
+target_include_directories(rebuild_test PRIVATE src)
+add_test(NAME rebuild COMMAND rebuild_test)
