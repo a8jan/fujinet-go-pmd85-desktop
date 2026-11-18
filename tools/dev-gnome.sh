@@ -64,7 +64,7 @@ build)
     ;;
 run)
     sdk --socket=wayland --socket=fallback-x11 --share=ipc --share=network \
-        --socket=pulseaudio --device=dri --own-name="$APP_ID" \
+        --socket=pulseaudio --device=all --own-name="$APP_ID" \
         --cwd="$REPO" \
         --command="$REPO/build-gnome/frontends/gnome/fujinet-go-pmd85-gnome" \
         "$SDK" "$@"

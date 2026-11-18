@@ -223,6 +223,33 @@ enum {
     PMD85SESSION_JOY_FIRE = 16,
 };
 void pmd85session_set_joystick(pmd85session *s, int port, unsigned bits);
+/* What joystick port shows now (every source merged), PMD85SESSION_JOY_*
+ * bits; and which joysticks the machine has: bit 0 joystick 1 (GPIO port A,
+ * not while the PMD 32 is connected), bit 1 joystick 2 (port B); 0 with the
+ * joystick interface off. */
+unsigned pmd85session_joystick_held(pmd85session *s, int port);
+unsigned pmd85session_joysticks(pmd85session *s);
+
+/* ---- gamepads (SDL, hot-plug; started with the session) -------------------
+ * Pads (mapped gamepads and plain HID joysticks) come and go as they are
+ * plugged in. Each drives a joystick: the D-pad (and, setting "analog_stick"
+ * on, the left stick) steers; South, East, the shoulders and the triggers
+ * fire. The first unassigned pad takes the first free joystick, the next
+ * one the other. An explicit assignment is remembered (setting "pad_assign",
+ * by the pad's GUID, else its name) and comes back with the pad. */
+int  pmd85session_gamepad_count(pmd85session *s);
+/* The pad's name into dst; returns its length. */
+int  pmd85session_gamepad_name(pmd85session *s, int idx, char *dst, int dstsz);
+/* Put pad idx on joystick port (0, 1); -1 makes it automatic again. */
+void pmd85session_gamepad_assign(pmd85session *s, int idx, int port);
+/* Its explicit joystick, -1 automatic; the one it drives now, -1 none. */
+int  pmd85session_gamepad_assignment(pmd85session *s, int idx);
+int  pmd85session_gamepad_effective_port(pmd85session *s, int idx);
+/* Changes whenever the pads or their joysticks do: re-read them then. */
+unsigned pmd85session_gamepad_generation(pmd85session *s);
+/* The last "Connected: ..." / "Disconnected: ..." into dst; returns its
+ * serial, which changes with each new one (a toast's cue). */
+unsigned pmd85session_gamepad_last_event(pmd85session *s, char *dst, int dstsz);
 
 /* ---- audio ---------------------------------------------------------------- */
 

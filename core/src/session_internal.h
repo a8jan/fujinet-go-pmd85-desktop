@@ -14,6 +14,7 @@
 #include <stdint.h>
 
 #include "pmd85session.h"
+#include "joy_input.h"
 
 #define PMD85_PATH_MAX 1024
 
@@ -86,6 +87,16 @@ struct pmd85session {
     pthread_mutex_t input_mtx;
     uint8_t key_down[256];  /* HID usages the host keyboard holds */
 
+    /* ---- joysticks (joy_input.h) and gamepads (gamepad_sdl.c) ---- */
+    pthread_mutex_t joy_mtx;
+    unsigned joy_held[PMD85_SRC_COUNT][PMD85_JOY_PORTS];
+    void *gamepad;              /* gamepad_sdl.c state */
+    unsigned pad_gen_base;      /* the pad generation, carried across a restart */
+    int pad_restarted;
+    pthread_mutex_t pad_event_mtx;
+    char pad_event[160];        /* the last connect / disconnect, for a toast */
+    unsigned pad_event_serial;
+
     /* ---- FujiNet runtime (fujinet_runtime.c) ---- */
     int fujinet_running;
     int fujinet_external;
@@ -114,6 +125,14 @@ void paths_materialise_roms(pmd85session *s);  /* embedded ROMs -> roms_dir */
 int  mkdir_p(const char *path);
 int  copy_file(const char *src, const char *dst);
 int  path_is_file(const char *path);
+
+/* gamepad_sdl.c */
+int  gamepad_start(pmd85session *s);
+void gamepad_stop(pmd85session *s);
+/* session.c, for gamepad_sdl.c: a connect/disconnect message; the joysticks
+ * the machine has now (bit 0 = joystick 1, bit 1 = joystick 2) */
+void session_gamepad_event(pmd85session *s, const char *text);
+unsigned session_joysticks(pmd85session *s);
 
 /* audio_sdl.c */
 int  audio_start(pmd85session *s);

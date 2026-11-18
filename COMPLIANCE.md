@@ -7,6 +7,7 @@ that enters the build, where it comes from, its licence, and how it gets in:
 |---|---|---|---|
 | This repository | fujinet-go-pmd85-desktop | GPL-3.0-or-later | source |
 | Session/FujiNet/paths/settings code and the debugger's expression evaluator, prompt, symbol table, memory tools and DriveWire trace (`core/debugger/`), derived from fujinet-go-coco-desktop | Thomas Cherryhomes | GPL-3.0-or-later | adapted source |
+| Gamepads: the remembered pad assignments (`core/src/pad_assign.[ch]`, its test) and the SDL gamepad thread and input merge (`core/src/gamepad_sdl.c`, `core/src/joy_input.[ch]`), derived from fujinet-go-atari800-desktop | Thomas Cherryhomes | GPL-3.0-or-later | adapted source |
 | GPMD85Emulator machine sources (`src/Chip*`, `SystemPIO`, `Iif*`, `Pmd32`, `Mif85`, `Mouse602`, `RomModule`, `RomMegaModule`, `TapeBrowser`, `CommonUtils`, `globals.h`, `sigslot.hpp`) | https://github.com/mborik/GPMD85Emulator, pinned in `cmake/Dependencies.cmake` | MIT (Roman Borik, Martin Borik); `sigslot.hpp` MIT (Pierre-Antoine Lacaze) | staged and compiled unmodified (`cmake/StageGPMD85.cmake`) |
 | Logic ported from GPMD85Emulator's TEmulator/ScreenPMD85/SoundDriver into `core/pmd85/pmd85_host.cpp` | same | MIT | adapted source, attribution in the file header |
 | SAASound (`saa/`) | via GPMD85Emulator | BSD-style (see `saa/LICENCE`) | staged and compiled |

@@ -41,6 +41,7 @@ struct _Pmd85Window {
     GtkWidget *led[3];
     guint status_id;
     int last_rom_loads;
+    unsigned pad_event;   /* the last gamepad connect/disconnect toasted */
     guint hot_key;        /* an Alt hotkey that went down: its release stays here */
 };
 
@@ -154,6 +155,16 @@ static gboolean status_tick(gpointer user_data)
 
     for (i = 0; i < 3; i++)
         gtk_widget_set_opacity(self->led[i], (leds & (1 << i)) ? 1.0 : 0.18);
+
+    {   /* a gamepad plugged in or out */
+        char msg[160];
+        unsigned serial = pmd85session_gamepad_last_event(s, msg, sizeof msg);
+        if (serial != self->pad_event) {
+            self->pad_event = serial;
+            if (msg[0])
+                pmd85_window_toast(self, msg);
+        }
+    }
 
     if (loads != self->last_rom_loads) {
         g_autofree char *msg = NULL;

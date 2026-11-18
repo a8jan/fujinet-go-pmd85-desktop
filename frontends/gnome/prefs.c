@@ -36,6 +36,11 @@ typedef struct {
     GtkWidget *addr_row;
     GtkWidget *module_row;   /* the module combo */
     GtkWidget *file_row;     /* the module file and its Choose button */
+    AdwPreferencesGroup *pads;   /* the gamepads, one row each */
+    GPtrArray *pad_rows;
+    unsigned pad_gen;
+    guint pad_timer;
+    gboolean pad_filling;    /* rows being (re)built: their combos are not the user's */
 } PrefsState;
 
 /* ---- row helpers ----------------------------------------------------------- */
@@ -266,6 +271,10 @@ static void prefs_closed(AdwDialog *dialog, gpointer ud)
 {
     PrefsState *st = ud;
     (void)dialog;
+    if (st->pad_timer)
+        g_source_remove(st->pad_timer);
+    if (st->pad_rows)
+        g_ptr_array_unref(st->pad_rows);
     pmd85session_settings_flush(st->session);
     if (st->session_dirty)
         pmd85_window_restart_session(st->window);
@@ -329,7 +338,8 @@ static AdwPreferencesPage *machine_page(PrefsState *st)
         pmd85session_get_int(s, "pmd32", 0), "pmd32",
         G_CALLBACK(peripheral_changed), st));
     adw_preferences_group_add(periph, switch_row("Joystick 4004/482",
-        "On the GPIO port, from a gamepad", pmd85session_get_int(s, "joystick", 1),
+        "Two, on the GPIO ports: 1 on port A, 2 on port B (Input: gamepads)",
+        pmd85session_get_int(s, "joystick", 1),
         "joystick", G_CALLBACK(peripheral_changed), st));
     adw_preferences_page_add(page, periph);
 
@@ -432,6 +442,112 @@ static AdwPreferencesPage *fujinet_page(PrefsState *st)
     return page;
 }
 
+/* ---- input: the gamepads ------------------------------------------------- */
+
+static const char *const pad_choices[] = { "Automatic", "Joystick 1", "Joystick 2" };
+
+static const char *pad_choice(int i)
+{
+    return (i >= 0 && i < 3) ? pad_choices[i] : NULL;
+}
+
+static void pad_assign_changed(GObject *row, GParamSpec *p, gpointer ud)
+{
+    PrefsState *st = ud;
+    (void)p;
+    if (st->pad_filling)
+        return;
+    /* Automatic = -1, Joystick N = N - 1 */
+    pmd85session_gamepad_assign(st->session,
+        GPOINTER_TO_INT(g_object_get_data(row, "pmd85-pad")), selected(row) - 1);
+}
+
+/* The rows anew from the session's pads (on open and whenever the pads or
+ * their joysticks changed). */
+static void pads_fill(PrefsState *st)
+{
+    const int n = pmd85session_gamepad_count(st->session);
+    const unsigned avail = pmd85session_joysticks(st->session);
+
+    st->pad_filling = TRUE;
+    st->pad_gen = pmd85session_gamepad_generation(st->session);
+    for (guint i = 0; i < st->pad_rows->len; i++)
+        adw_preferences_group_remove(st->pads, g_ptr_array_index(st->pad_rows, i));
+    g_ptr_array_set_size(st->pad_rows, 0);
+
+    if (n == 0) {
+        GtkWidget *row = adw_action_row_new();
+        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), "No gamepads connected");
+        adw_action_row_set_subtitle(ADW_ACTION_ROW(row),
+            "Plug one in: it takes the first free joystick");
+        gtk_widget_add_css_class(row, "dim-label");
+        adw_preferences_group_add(st->pads, row);
+        g_ptr_array_add(st->pad_rows, row);
+    }
+    for (int i = 0; i < n; i++) {
+        char name[96];
+        int port = pmd85session_gamepad_effective_port(st->session, i);
+        g_autofree char *sub = port >= 0
+            ? g_strdup_printf("Drives joystick %d", port + 1)
+            : g_strdup(avail ? "Not used: no joystick free" : "Not used: the joystick interface is off");
+        GtkWidget *row;
+        pmd85session_gamepad_name(st->session, i, name, sizeof name);
+        row = combo_row(name, sub, pad_choice,
+                        pmd85session_gamepad_assignment(st->session, i) + 1,
+                        G_CALLBACK(pad_assign_changed), st);
+        g_object_set_data(G_OBJECT(row), "pmd85-pad", GINT_TO_POINTER(i));
+        adw_preferences_group_add(st->pads, row);
+        g_ptr_array_add(st->pad_rows, row);
+    }
+    st->pad_filling = FALSE;
+}
+
+static gboolean pads_tick(gpointer ud)
+{
+    PrefsState *st = ud;
+    if (pmd85session_gamepad_generation(st->session) != st->pad_gen)
+        pads_fill(st);
+    return G_SOURCE_CONTINUE;
+}
+
+/* The left stick: read by the pad thread on every poll, so at once. */
+static void analog_changed(GObject *row, GParamSpec *p, gpointer ud)
+{
+    PrefsState *st = ud;
+    (void)p;
+    pmd85session_set_int(st->session, "analog_stick", active(row));
+}
+
+static AdwPreferencesPage *input_page(PrefsState *st)
+{
+    pmd85session *s = st->session;
+    AdwPreferencesPage *page = ADW_PREFERENCES_PAGE(adw_preferences_page_new());
+    AdwPreferencesGroup *g = ADW_PREFERENCES_GROUP(adw_preferences_group_new());
+
+    adw_preferences_page_set_title(page, "Input");
+    adw_preferences_page_set_name(page, "input");
+    adw_preferences_page_set_icon_name(page, "input-gaming-symbolic");
+
+    st->pads = ADW_PREFERENCES_GROUP(adw_preferences_group_new());
+    adw_preferences_group_set_title(st->pads, "Gamepads");
+    adw_preferences_group_set_description(st->pads,
+        "Each drives a 4004/482 joystick: the D-pad steers, A, B, the shoulders "
+        "and the triggers fire. Joystick 1 is GPIO port A (not while the PMD 32 "
+        "is connected), joystick 2 port B.");
+    st->pad_rows = g_ptr_array_new();
+    pads_fill(st);
+    adw_preferences_page_add(page, st->pads);
+
+    adw_preferences_group_add(g, switch_row("Left stick steers",
+        "The analog stick works as the joystick too, besides the D-pad",
+        pmd85session_get_int(s, "analog_stick", 1), "analog_stick",
+        G_CALLBACK(analog_changed), st));
+    adw_preferences_page_add(page, g);
+
+    st->pad_timer = g_timeout_add(500, pads_tick, st);
+    return page;
+}
+
 void pmd85_prefs_show(Pmd85Window *parent, pmd85session *session)
 {
     AdwPreferencesDialog *dlg =
@@ -442,7 +558,13 @@ void pmd85_prefs_show(Pmd85Window *parent, pmd85session *session)
     st->session = session;
     adw_preferences_dialog_add(dlg, machine_page(st));
     adw_preferences_dialog_add(dlg, display_page(st));
+    adw_preferences_dialog_add(dlg, input_page(st));
     adw_preferences_dialog_add(dlg, fujinet_page(st));
     g_signal_connect(dlg, "closed", G_CALLBACK(prefs_closed), st);
+    {   /* PMD85_PREFS_PAGE=input: open on that page (development) */
+        const char *pg = g_getenv("PMD85_PREFS_PAGE");
+        if (pg && *pg)
+            adw_preferences_dialog_set_visible_page_name(dlg, pg);
+    }
     adw_dialog_present(ADW_DIALOG(dlg), GTK_WIDGET(parent));
 }

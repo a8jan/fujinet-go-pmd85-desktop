@@ -108,7 +108,19 @@ Next
   "color_profile" carries over).
 - Tape, later: a "Play" that also types the load command (MGLD nn on the
   monitor, LOAD in BASIC -- needs to know which is running).
-- Gamepad (gamepad_sdl.c from the CoCo app) -> joystick 4004/482 bits.
+- (done) Gamepads -> the 4004/482 joysticks (1 on GPIO A, 2 on GPIO B; A is
+  the PMD 32's when it is connected): SDL3 hot-plug thread after the Atari
+  app's v0.7.0 design -- sources merged per joystick (opposite directions
+  cancel), pads take the free joysticks in order or one set by hand and
+  remembered ("pad_assign"); D-pad and left stick ("analog_stick") steer,
+  South/East/shoulders/triggers fire; raw HID joysticks by hat 0, axes 0/1,
+  buttons 0-3. Preferences > Input lists the pads; connect toasts.
+  gamepad_test drives it with SDL virtual pads; joystick_test reads the
+  ports with a PMD program.
+- Gamepads, later: remappable buttons (a pad button -> a PMD key, as the
+  Atari app's Input page), keys as a joystick (upstream's JT_KEYS), the
+  drawn Controllers window. The flatpak manifest needs --device=all (or
+  input) for /dev/input, as tools/dev-gnome.sh run now has.
 - Keyboard options apply by cold restart; make exchZY/numpad live.
 - K11 (F12 is the debugger key): offer it another way (on-screen key or a
   binding).

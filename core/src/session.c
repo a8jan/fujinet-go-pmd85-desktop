@@ -203,8 +203,8 @@ static void build_config(pmd85session *s, pmd85host_config *c)
     c->compat_mode = pmd85session_get_int(s, "compat_mode", 0) ? 1 : 0;
     c->mif85 = s->opts.mif85;
     c->pmd32 = s->opts.pmd32;
-    c->joystick_gpio0 = s->opts.joystick ? 1 : 0;
-    c->joystick_gpio1 = 0;
+    c->joystick_gpio0 = s->opts.joystick ? 1 : 0;   /* the host leaves A to a PMD 32 */
+    c->joystick_gpio1 = s->opts.joystick ? 1 : 0;
     c->exchange_zy = pmd85session_get_int(s, "exchange_zy", 1) ? 1 : 0;
     c->numpad = pmd85session_get_int(s, "numpad", 1) ? 1 : 0;
     c->volume = pmd85session_get_int(s, "volume", 96);
@@ -423,6 +423,8 @@ pmd85session *pmd85session_new(const pmd85session_paths *paths)
     pthread_mutex_init(&s->vs_mtx, NULL);
     pthread_mutex_init(&s->start_mtx, NULL);
     pthread_mutex_init(&s->input_mtx, NULL);
+    pthread_mutex_init(&s->joy_mtx, NULL);
+    pthread_mutex_init(&s->pad_event_mtx, NULL);
     pmd85_cond_init_monotonic(&s->start_cv);
 
     settings_init(s);
@@ -454,6 +456,8 @@ void pmd85session_free(pmd85session *s)
     pthread_mutex_destroy(&s->vs_mtx);
     pthread_mutex_destroy(&s->start_mtx);
     pthread_mutex_destroy(&s->input_mtx);
+    pthread_mutex_destroy(&s->joy_mtx);
+    pthread_mutex_destroy(&s->pad_event_mtx);
     pthread_cond_destroy(&s->start_cv);
     free(s->frame);
     free(s);
@@ -600,6 +604,10 @@ int pmd85session_start(pmd85session *s, const pmd85session_start_opts *opts)
 
     if (opts->enable_audio)
         audio_start(s);
+    if (opts->enable_gamepad && gamepad_start(s) != 0) {
+        fprintf(stderr, "pmd85session: no gamepads: %s\n", s->last_error);
+        s->last_error[0] = '\0';   /* the session itself is up */
+    }
 
     /* the tape that was in the deck last time (upstream does the same); a
      * deck that still has a tape -- a session restart -- keeps it */
@@ -642,6 +650,8 @@ void pmd85session_stop(pmd85session *s)
     pthread_join(s->emu_thread, NULL);
     s->emu_thread_started = 0;
     audio_stop(s);
+    gamepad_stop(s);
+    joy_input_clear_all(s);
     fujinet_stop(s);
     s->fujinet_external = 0;
     pmd85host_audio_set_active(1);
@@ -808,10 +818,85 @@ void pmd85session_release_all(pmd85session *s)
     pmd85host_release_all_keys();
 }
 
+/****************************************************************************/
+/** Joysticks: every source merged (joy_input.h)                           **/
+/****************************************************************************/
+
+void joy_input_set(pmd85session *s, int src, int port, unsigned bits)
+{
+    unsigned col[PMD85_SRC_COUNT], merged;
+    if (!s || src < 0 || src >= PMD85_SRC_COUNT || port < 0 || port >= PMD85_JOY_PORTS)
+        return;
+    pthread_mutex_lock(&s->joy_mtx);
+    s->joy_held[src][port] = bits & 0x1F;
+    for (int i = 0; i < PMD85_SRC_COUNT; i++) col[i] = s->joy_held[i][port];
+    merged = pmd85_joy_merge(col, PMD85_SRC_COUNT);
+    pmd85host_set_joystick(port, merged);
+    pthread_mutex_unlock(&s->joy_mtx);
+}
+
+void joy_input_clear_pad(pmd85session *s, int owner)
+{
+    if (owner < 0 || owner >= PMD85_MAX_PADS) return;
+    for (int p = 0; p < PMD85_JOY_PORTS; p++) {
+        joy_input_set(s, PMD85_SRC_PAD(owner), p, 0);
+        joy_input_set(s, PMD85_SRC_STICK(owner), p, 0);
+    }
+}
+
+void joy_input_clear_all(pmd85session *s)
+{
+    pthread_mutex_lock(&s->joy_mtx);
+    memset(s->joy_held, 0, sizeof s->joy_held);
+    for (int p = 0; p < PMD85_JOY_PORTS; p++) pmd85host_set_joystick(p, 0);
+    pthread_mutex_unlock(&s->joy_mtx);
+}
+
 void pmd85session_set_joystick(pmd85session *s, int port, unsigned bits)
 {
-    (void)s;
-    pmd85host_set_joystick(port, bits);
+    joy_input_set(s, PMD85_SRC_FRONTEND, port, bits);
+}
+
+unsigned pmd85session_joystick_held(pmd85session *s, int port)
+{
+    unsigned col[PMD85_SRC_COUNT], r;
+    if (!s || port < 0 || port >= PMD85_JOY_PORTS) return 0;
+    pthread_mutex_lock(&s->joy_mtx);
+    for (int i = 0; i < PMD85_SRC_COUNT; i++) col[i] = s->joy_held[i][port];
+    r = pmd85_joy_merge(col, PMD85_SRC_COUNT);
+    pthread_mutex_unlock(&s->joy_mtx);
+    return r;
+}
+
+unsigned session_joysticks(pmd85session *s)
+{
+    /* as build_config wires them: port A is the PMD 32's when it is there */
+    if (!s->opts.joystick) return 0;
+    return (s->opts.pmd32 ? 0u : 1u) | 2u;
+}
+
+unsigned pmd85session_joysticks(pmd85session *s)
+{
+    return s ? session_joysticks(s) : 0;
+}
+
+void session_gamepad_event(pmd85session *s, const char *text)
+{
+    pthread_mutex_lock(&s->pad_event_mtx);
+    snprintf(s->pad_event, sizeof s->pad_event, "%s", text ? text : "");
+    s->pad_event_serial++;
+    pthread_mutex_unlock(&s->pad_event_mtx);
+}
+
+unsigned pmd85session_gamepad_last_event(pmd85session *s, char *dst, int dstsz)
+{
+    unsigned serial;
+    if (!s) return 0;
+    pthread_mutex_lock(&s->pad_event_mtx);
+    if (dst && dstsz > 0) snprintf(dst, (size_t)dstsz, "%s", s->pad_event);
+    serial = s->pad_event_serial;
+    pthread_mutex_unlock(&s->pad_event_mtx);
+    return serial;
 }
 
 int pmd85session_render_audio(pmd85session *s, int16_t *out, int nsamples)

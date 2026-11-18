@@ -86,6 +86,9 @@ add_library(pmd85session STATIC
   src/paths.c
   src/input_map.c
   src/audio_sdl.c
+  src/gamepad_sdl.c
+  src/joy_input.c
+  src/pad_assign.c
   src/fujinet_runtime.c
   debugger/debugger.c
   debugger/i8080dasm.c
@@ -181,3 +184,14 @@ target_compile_definitions(fujinet_restart_test PRIVATE
   PMD85_DEV_FUJINET_OUT="${CMAKE_SOURCE_DIR}/tools/fujinet/work/out")
 add_test(NAME fujinet_restart COMMAND fujinet_restart_test)
 set_tests_properties(fujinet_restart PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 180)
+add_executable(joystick_test tests/joystick_test.c)
+target_link_libraries(joystick_test pmd85session)
+target_include_directories(joystick_test PRIVATE src)
+add_test(NAME joystick COMMAND joystick_test)
+add_executable(pad_assign_test tests/pad_assign_test.c src/pad_assign.c)
+target_include_directories(pad_assign_test PRIVATE src)
+add_test(NAME pad_assign COMMAND pad_assign_test)
+add_executable(gamepad_test tests/gamepad_test.c)
+target_link_libraries(gamepad_test pmd85session)
+add_test(NAME gamepad COMMAND gamepad_test)
+set_tests_properties(gamepad PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
