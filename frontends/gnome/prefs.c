@@ -349,8 +349,9 @@ static AdwPreferencesPage *machine_page(PrefsState *st)
     adw_preferences_group_set_title(keyb, "Keyboard");
     adw_preferences_group_set_description(keyb,
         "F1\xe2\x80\x93" "F11 are K0\xe2\x80\x93" "K10, Esc and Ctrl are STOP, "
-        "Tab is C-D, ` is WRK, PgUp/PgDn are RCL/CLR. F12 opens the debugger; "
-        "Ctrl+Shift+F is fullscreen.");
+        "Tab is C-D, ` is WRK, PgUp/PgDn are RCL/CLR. The app's keys: F12 debugger, "
+        "Alt+F fullscreen, Alt+C colors, Alt+T tape browser, Alt+P tape play/stop, "
+        "Alt+F5 RESET, Alt+Shift+F5 cold restart.");
     adw_preferences_group_add(keyb, switch_row("Swap Z and Y",
         "For QWERTZ keyboards", pmd85session_get_int(s, "exchange_zy", 1),
         "exchange_zy", G_CALLBACK(keyboard_changed), st));
@@ -370,9 +371,10 @@ static AdwPreferencesPage *display_page(PrefsState *st)
 
     adw_preferences_page_set_title(page, "Display");
     adw_preferences_page_set_icon_name(page, "video-display-symbolic");
-    adw_preferences_group_add(g, combo_row("Colours",
-        "Standard is the white/half-bright TV picture; ColorACE the colour "
-        "modification", pmd85session_color_name,
+    adw_preferences_group_add(g, combo_row("Colors",
+        "Black & White is the TV picture (white, half bright, blinking), Green the "
+        "same on a green monitor; RGBM and ColorACE are the color modifications "
+        "(Alt+C)", pmd85session_color_name,
         pmd85session_color_profile(s), G_CALLBACK(color_changed), st));
     adw_preferences_group_add(g, combo_row("Aspect", NULL, aspect_name,
         pmd85session_get_int(s, "aspect_mode", PMD85_ASPECT_TV_4_3),

@@ -120,6 +120,7 @@ static void refresh(TapeState *st);
 static void toast(TapeState *st, const char *text)
 {
     AdwToast *t = adw_toast_new(text);
+    adw_toast_set_use_markup(t, FALSE);
     adw_toast_set_timeout(t, 3);
     adw_toast_overlay_add_toast(st->toasts, t);
 }

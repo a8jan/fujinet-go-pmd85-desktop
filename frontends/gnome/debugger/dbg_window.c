@@ -456,6 +456,14 @@ static void accent_tag(GtkTextView *view, const char *name)
                                "paragraph-background", rgb, "foreground", ink, NULL);
 }
 
+/* plain text: markup would drop a message with "&" or "<" in it */
+static void toast(DbgWin *state, const char *msg)
+{
+    AdwToast *t = adw_toast_new(msg);
+    adw_toast_set_use_markup(t, FALSE);
+    adw_toast_overlay_add_toast(state->toasts, t);
+}
+
 /* Messages from Load Symbols and Save land in the console's transcript and,
  * since the console may not be the tab showing, in a toast. */
 static void notice(DbgWin *state, const char *msg)
@@ -463,12 +471,7 @@ static void notice(DbgWin *state, const char *msg)
     char line[700];
     g_snprintf(line, sizeof line, "%s\n", msg);
     append_text(state->console_out, line, FALSE);
-    adw_toast_overlay_add_toast(state->toasts, adw_toast_new(msg));
-}
-
-static void toast(DbgWin *state, const char *msg)
-{
-    adw_toast_overlay_add_toast(state->toasts, adw_toast_new(msg));
+    toast(state, msg);
 }
 
 /* The step controls wait a moment for the engine to come to rest, so a

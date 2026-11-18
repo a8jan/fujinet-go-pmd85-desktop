@@ -227,7 +227,9 @@ void pmd85host_set_joystick(int port, unsigned bits)
 }
 
 int pmd85host_led_state(void) { return g_led.load(std::memory_order_relaxed); }
+static std::atomic<int> g_mega_size{0};
 int pmd85host_mega_page(void) { return g_mega_page.load(std::memory_order_relaxed); }
+int pmd85host_mega_size(void) { return g_mega_size.load(std::memory_order_relaxed); }
 
 /* ---- pending commands (UI -> emulator thread) ------------------------------ */
 
@@ -266,7 +268,7 @@ void pmd85host_config_defaults(pmd85host_config *c)
     c->rom_module = PMD85_ROMMOD_NONE;
     c->becker_port = 65505;
     snprintf(c->becker_host, sizeof c->becker_host, "127.0.0.1");
-    c->color_profile = PMD85_COLOR_STANDARD;
+    c->color_profile = PMD85_COLOR_BW;
     /* upstream's default "rgb" palette for CP_COLOR */
     c->attr[0] = LIME;
     c->attr[1] = RED;
@@ -439,11 +441,15 @@ private:
 /* The machine                                                              */
 /* ======================================================================== */
 
-static const DWORD k_palette[16] = {
+static const DWORD k_palette[18] = {
     /* ScreenPMD85::InitPalette, as XRGB8888 */
     0x000000, 0xA00000, 0x00A000, 0xA0A000, 0x0000A0, 0xA000A0, 0x00A0A0, 0xA0A0A0,
     0xBFBFBF, 0xFF5050, 0x50FF50, 0xFFFF50, 0x5050FF, 0xFF50FF, 0x50FFFF, 0xFFFFFF,
+    /* ours: a green monitor's phosphor, full and half bright (the ratio of
+     * WHITE to SILVER above) */
+    0x33FF33, 0x26BF26,
 };
+enum { PHOSPHOR = 16, PHOSPHOR_HALF };
 
 class PmdMachine
 {
@@ -493,6 +499,9 @@ private:
     void Render();
     void InsertRomPack();
     void InsertMegaModule();
+public:
+    int megaSize = 0;     /* the image InsertMegaModule put in, bytes */
+private:
 };
 
 PmdMachine::PmdMachine(const pmd85host_config &c)
@@ -739,8 +748,10 @@ void PmdMachine::InsertMegaModule()
         size = 8L * KB * KB;
     }
     std::vector<BYTE> buff((size_t)size, 0xFF);
-    if (ReadFromFile(cfg.mrm, 0, (int)size, buff.data()) > 0)
+    if (ReadFromFile(cfg.mrm, 0, (int)size, buff.data()) > 0) {
         megaModule->LoadRom((unsigned)size, buff.data());
+        megaSize = (int)size;
+    }
     else
         host_log(1, "cannot read the MegaModule image \"%s\"", cfg.mrm);
 }
@@ -753,19 +764,22 @@ void PmdMachine::SetColors()
         cAttr[i] = (BYTE)((cfg.attr[i] >= 0 && cfg.attr[i] <= WHITE) ? cfg.attr[i] : WHITE);
 
     switch (cfg.color_profile) {
-    case PMD85_COLOR_MONO:
-        pAttr[0] = pAttr[1] = pAttr[2] = pAttr[3] = WHITE;
-        blinkingEnabled = false;
-        break;
     default:
-    case PMD85_COLOR_STANDARD:
+    case PMD85_COLOR_BW:   /* upstream's CP_STANDARD */
         pAttr[0] = WHITE;
         pAttr[1] = SILVER;
         pAttr[2] = WHITE;
         pAttr[3] = SILVER;
         blinkingEnabled = true;
         break;
-    case PMD85_COLOR_COLOR:
+    case PMD85_COLOR_GREEN:
+        pAttr[0] = PHOSPHOR;
+        pAttr[1] = PHOSPHOR_HALF;
+        pAttr[2] = PHOSPHOR;
+        pAttr[3] = PHOSPHOR_HALF;
+        blinkingEnabled = true;
+        break;
+    case PMD85_COLOR_RGBM: /* CP_COLOR */
         for (int i = 0; i < 4; i++)
             pAttr[i] = pAttr[i + 4] = cAttr[i];
         blinkingEnabled = false;
@@ -1398,12 +1412,18 @@ static void publish_state(PmdMachine *m)
     if (!m) {
         g_led.store(0);
         g_mega_page.store(-1);
+        g_mega_size.store(0);
         g_link_up.store(0);
         g_rx_pending.store(0);
         return;
     }
     g_led.store(m->systemPIO ? m->systemPIO->ledState : 0);
     g_mega_page.store(m->megaModule ? m->megaModule->GetCurrentPage() : -1);
+    {   /* what FujiNet loaded last, else the file it started with */
+        int last = 0;
+        const int loads = m->becker ? m->becker->RomLoads(&last) : 0;
+        g_mega_size.store(!m->megaModule ? 0 : loads > 0 ? last : m->megaSize);
+    }
     if (m->becker) {
         int last = 0;
         int loads = m->becker->RomLoads(&last);

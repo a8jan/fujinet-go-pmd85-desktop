@@ -1,8 +1,10 @@
 /*
  * Pmd85Window: main window of the GNOME frontend. Header bar + menu over the
  * emulator display; keyboard capture routes every key to the PMD 85 except
- * F12 (the debugger), Ctrl+Shift+F (fullscreen) and Ctrl+Shift+T (the tape
- * browser).
+ * F12 (the debugger) and the Alt hotkeys (upstream GPMD85's): Alt+F
+ * fullscreen, Alt+C colors, Alt+T tape browser, Alt+P tape play/stop,
+ * Alt+F5 RESET, Alt+Shift+F5 cold restart. Ctrl (STOP) and Shift are the
+ * PMD's own modifiers, so no hotkey uses them.
  *
  * The PMD keeps more of the keyboard than the other family apps: its function
  * keys K0..K10 are F1..F11 (FujiNet CONFIG boots with K10 = F11), so neither
@@ -39,7 +41,7 @@ struct _Pmd85Window {
     GtkWidget *led[3];
     guint status_id;
     int last_rom_loads;
-    gboolean ctlf_down;   /* Ctrl+Shift+F went down: swallow its release */
+    guint hot_key;        /* an Alt hotkey that went down: its release stays here */
 };
 
 G_DEFINE_FINAL_TYPE(Pmd85Window, pmd85_window, ADW_TYPE_APPLICATION_WINDOW)
@@ -49,6 +51,7 @@ G_DEFINE_FINAL_TYPE(Pmd85Window, pmd85_window, ADW_TYPE_APPLICATION_WINDOW)
 void pmd85_window_toast(Pmd85Window *self, const char *message)
 {
     AdwToast *t = adw_toast_new(message);
+    adw_toast_set_use_markup(t, FALSE);   /* plain text: "Black & White" */
     adw_toast_set_timeout(t, 4);
     adw_toast_overlay_add_toast(self->toasts, t);
 }
@@ -127,9 +130,12 @@ static gboolean status_tick(gpointer user_data)
     {
         GString *g = g_string_new(pmd85session_model_name(pmd85session_model(s)));
         pmd85session_tape_info t;
+        g_string_append_printf(g, " \xc2\xb7 %s",
+                               pmd85session_color_name(pmd85session_color_profile(s)));
         g_string_append_printf(g, " \xc2\xb7 %s", link);
-        if (page >= 0)
-            g_string_append_printf(g, " \xc2\xb7 MegaModule page %d", page);
+        /* the page only when there are pages: an image over 32 KB */
+        if (page >= 0 && pmd85session_mega_size(s) > 32 * 1024)
+            g_string_append_printf(g, " \xc2\xb7 MRM #%d", page);
         pmd85session_tape_get_info(s, &t);
         if (t.blocks > 0) {
             const char *blk = strcmp(t.block, "..") ? t.block : "data";
@@ -163,39 +169,56 @@ static gboolean status_tick(gpointer user_data)
  * Both press and release are forwarded: the machine's keyboard matrix tracks
  * held keys, and a missed release leaves that key down inside the PMD. */
 
+/* An Alt hotkey (k lowercased); FALSE when k is none. The PMD's matrix
+ * ignores keys while Alt is held (upstream's hotkey modifier), so these
+ * take nothing from it. */
+static gboolean hotkey(Pmd85Window *self, guint k, GdkModifierType state)
+{
+    GActionGroup *g = G_ACTION_GROUP(self);
+    switch (k) {
+    case GDK_KEY_f:
+        g_action_group_activate_action(g, "fullscreen", NULL);
+        return TRUE;
+    case GDK_KEY_c: {
+        const int next = (pmd85session_color_profile(self->session) + 1) % PMD85SESSION_COLOR_COUNT;
+        g_action_group_activate_action(g, "color", g_variant_new_int32(next));
+        return TRUE;   /* the subtitle shows it */
+    }
+    case GDK_KEY_t:
+        g_action_group_activate_action(g, "tape-browser", NULL);
+        return TRUE;
+    case GDK_KEY_p: {
+        pmd85session_tape_info t;
+        pmd85session_tape_get_info(self->session, &t);
+        g_action_group_activate_action(g, t.playing ? "tape-stop" : "tape-play", NULL);
+        return TRUE;
+    }
+    case GDK_KEY_F5:
+        g_action_group_activate_action(g, (state & GDK_SHIFT_MASK) ? "cold" : "reset", NULL);
+        return TRUE;
+    }
+    return FALSE;
+}
+
 static gboolean window_key(Pmd85Window *self, guint keyval,
                            GdkModifierType state, gboolean down)
 {
-    const gboolean f_key = keyval == GDK_KEY_F || keyval == GDK_KEY_f;
+    const guint k = gdk_keyval_to_lower(keyval);
 
-    if (!f_key)
-        self->ctlf_down = FALSE;
-    if (f_key && down && (state & GDK_CONTROL_MASK) && (state & GDK_SHIFT_MASK)) {
-        if (!self->ctlf_down) {
-            self->ctlf_down = TRUE;
-            if (gtk_window_is_fullscreen(GTK_WINDOW(self)))
-                gtk_window_unfullscreen(GTK_WINDOW(self));
-            else
-                gtk_window_fullscreen(GTK_WINDOW(self));
-        }
+    if (self->hot_key && k == self->hot_key) {
+        /* its auto-repeat and its release */
+        if (!down)
+            self->hot_key = 0;
         return TRUE;
     }
-    if (f_key && !down && self->ctlf_down) {
-        self->ctlf_down = FALSE;
+    if (down && (state & GDK_ALT_MASK) && hotkey(self, k, state)) {
+        self->hot_key = k;
         return TRUE;
     }
 
     if (keyval == GDK_KEY_F12) {
         if (down)
             pmd85_debugger_toggle(GTK_WINDOW(self), self->session);
-        return TRUE;
-    }
-
-    /* Ctrl+Shift+T: the tape browser (its release, too, stays here) */
-    if ((keyval == GDK_KEY_T || keyval == GDK_KEY_t) &&
-        (state & GDK_CONTROL_MASK) && (state & GDK_SHIFT_MASK)) {
-        if (down)
-            pmd85_tape_window_show(self, self->session);
         return TRUE;
     }
 
@@ -936,12 +959,12 @@ static GMenu *build_menu(void)
     g_object_unref(sub);
     {
         GMenu *tape = g_menu_new(), *deck = g_menu_new(), *file = g_menu_new();
-        g_menu_append(file, "Tape Browser (Ctrl+Shift+T)", "win.tape-browser");
+        g_menu_append(file, "Tape Browser (Alt+T)", "win.tape-browser");
         g_menu_append(file, "Load Tape\xe2\x80\xa6", "win.tape-load");
         g_menu_append(file, "Save Tape As\xe2\x80\xa6", "win.tape-save");
         g_menu_append_section(tape, NULL, G_MENU_MODEL(file));
-        g_menu_append(deck, "Play", "win.tape-play");
-        g_menu_append(deck, "Stop", "win.tape-stop");
+        g_menu_append(deck, "Play (Alt+P)", "win.tape-play");
+        g_menu_append(deck, "Stop (Alt+P)", "win.tape-stop");
         g_menu_append(deck, "Previous File", "win.tape-prev");
         g_menu_append(deck, "Next File", "win.tape-next");
         g_menu_append(deck, "Rewind", "win.tape-rewind");
@@ -952,14 +975,14 @@ static GMenu *build_menu(void)
         g_object_unref(deck);
         g_object_unref(tape);
     }
-    g_menu_append(machine, "RESET", "win.reset");
-    g_menu_append(machine, "Cold Restart", "win.cold");
+    g_menu_append(machine, "RESET (Alt+F5)", "win.reset");
+    g_menu_append(machine, "Cold Restart (Alt+Shift+F5)", "win.cold");
     g_menu_append_section(menu, "Machine", G_MENU_MODEL(machine));
 
     sub = radio_menu("win.color", pmd85session_color_name);
-    g_menu_append_submenu(view, "Colours", G_MENU_MODEL(sub));
+    g_menu_append_submenu(view, "Colors (Alt+C)", G_MENU_MODEL(sub));
     g_object_unref(sub);
-    g_menu_append(view, "Fullscreen (Ctrl+Shift+F)", "win.fullscreen");
+    g_menu_append(view, "Fullscreen (Alt+F)", "win.fullscreen");
     g_menu_append_section(menu, "View", G_MENU_MODEL(view));
 
     g_menu_append(fujinet, "FujiNet Web UI", "win.fujinet-config");

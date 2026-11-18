@@ -79,11 +79,17 @@ Next
   Console, Disassembly, Memory, Breakpoints (incl. IN/OUT), Watches, I/O
   (map, chips, I/O log), Trace, History, Symbols, FujiNet; Intel/Z80 and
   hex-style selectors. PMD85_OPEN_DEBUGGER=1 opens it at start.
-- (done) Tape browser (Machine > Tape > Tape Browser, Ctrl+Shift+T): the
+- (done) Tape browser (Machine > Tape > Tape Browser, Alt+T): the
   tape's blocks with the position and STOP marker; double-click moves the
   position; context menu: marker, move up/down, delete; Append Tape; auto
   stop (next file / marker / end); hex/dec. Previous/Next File (menu and
   browser) step over data blocks to the next header.
+- (done) Hotkeys on Alt, as upstream (Ctrl is STOP, Shift the PMD's): Alt+F
+  fullscreen, Alt+C colors (cycles), Alt+T tape browser, Alt+P tape
+  play/stop, Alt+F5 RESET, Alt+Shift+F5 cold restart.
+- (done) Colors: Black & White (the TV), Green (the same, green monitor),
+  RGBM, ColorACE; Monochrome dropped ("colors" setting; the old
+  "color_profile" carries over).
 - Tape, later: a "Play" that also types the load command (MGLD nn on the
   monitor, LOAD in BASIC -- needs to know which is running).
 - Gamepad (gamepad_sdl.c from the CoCo app) -> joystick 4004/482 bits.

@@ -113,6 +113,8 @@ int main(void)
         sleep_ms(3500);
         CHECK(pmd85session_mega_page(s) == 0, "a .mrm not in a MegaModule (%d)",
               pmd85session_mega_page(s));
+        CHECK(pmd85session_mega_size(s) > 0 && pmd85session_mega_size(s) <= 32 * 1024,
+              "the loader .mrm is %d bytes in the MegaModule", pmd85session_mega_size(s));
         lit = lit_now(s);
         CHECK(lit > 1500, "the loader from a .mrm not on screen (%d lit)", lit);
 

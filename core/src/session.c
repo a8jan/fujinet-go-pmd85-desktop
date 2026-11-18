@@ -65,7 +65,7 @@ static const char *const k_models[] = {
     "Mato", "Didaktik Alfa", "Didaktik Alfa 2", "Consul 2717", NULL
 };
 static const char *const k_colors[] = {
-    "Monochrome", "Standard (TV)", "Colour", "ColorACE", NULL
+    "Black & White", "Green", "RGBM", "ColorACE", NULL
 };
 static const char *const k_modules[] = {
     "FujiNet", "BASIC-G", "None", "Module file", NULL
@@ -464,9 +464,17 @@ void pmd85session_default_opts(pmd85session *s, pmd85session_start_opts *opts)
     memset(opts, 0, sizeof(*opts));
     opts->model = clamp_opt(pmd85session_get_int(s, "model", PMD85SESSION_MODEL_2A),
                             k_models, PMD85SESSION_MODEL_2A);
-    opts->color_profile = clamp_opt(pmd85session_get_int(s, "color_profile",
-                                                         PMD85SESSION_COLOR_STANDARD),
-                                    k_colors, PMD85SESSION_COLOR_STANDARD);
+    {
+        /* "colors"; before it "color_profile": Mono, Standard, Colour, ColorACE */
+        static const int old_map[] = { PMD85SESSION_COLOR_BW, PMD85SESSION_COLOR_BW,
+                                       PMD85SESSION_COLOR_RGBM, PMD85SESSION_COLOR_COLORACE };
+        int c = pmd85session_get_int(s, "colors", -1);
+        if (c < 0) {
+            int old = pmd85session_get_int(s, "color_profile", -1);
+            c = (old >= 0 && old < 4) ? old_map[old] : PMD85SESSION_COLOR_BW;
+        }
+        opts->color_profile = clamp_opt(c, k_colors, PMD85SESSION_COLOR_BW);
+    }
     opts->module = clamp_opt(pmd85session_get_int(s, "module",
                                                   PMD85SESSION_MODULE_FUJINET),
                              k_modules, PMD85SESSION_MODULE_FUJINET);
@@ -492,7 +500,7 @@ int pmd85session_start(pmd85session *s, const pmd85session_start_opts *opts)
 
     s->opts = *opts;
     s->cur_model = clamp_opt(opts->model, k_models, PMD85SESSION_MODEL_2A);
-    s->cur_color = clamp_opt(opts->color_profile, k_colors, PMD85SESSION_COLOR_STANDARD);
+    s->cur_color = clamp_opt(opts->color_profile, k_colors, PMD85SESSION_COLOR_BW);
     s->cur_module = clamp_opt(opts->module, k_modules, PMD85SESSION_MODULE_FUJINET);
     s->last_error[0] = '\0';
 
@@ -676,9 +684,9 @@ void pmd85session_set_model(pmd85session *s, int model)
 void pmd85session_set_color_profile(pmd85session *s, int profile)
 {
     if (!s) return;
-    profile = clamp_opt(profile, k_colors, PMD85SESSION_COLOR_STANDARD);
+    profile = clamp_opt(profile, k_colors, PMD85SESSION_COLOR_BW);
     s->cur_color = profile;
-    pmd85session_set_int(s, "color_profile", profile);
+    pmd85session_set_int(s, "colors", profile);
     /* The colour profile is only how frames are rendered, but the host keeps
      * it in the machine's config; a rebuild would reboot the machine, so the
      * host is told through the same path with the machine kept. */
@@ -766,6 +774,11 @@ int pmd85session_leds(const pmd85session *s)
 int pmd85session_mega_page(const pmd85session *s)
 {
     return (s && s->running) ? pmd85host_mega_page() : -1;
+}
+
+int pmd85session_mega_size(const pmd85session *s)
+{
+    return (s && s->running) ? pmd85host_mega_size() : 0;
 }
 
 /****************************************************************************/

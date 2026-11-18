@@ -55,10 +55,11 @@ enum {
 
 /* Colour profiles. */
 enum {
-    PMD85SESSION_COLOR_MONO = 0,
-    PMD85SESSION_COLOR_STANDARD,   /* the TV picture: white, half-bright, blink */
-    PMD85SESSION_COLOR_COLOR,      /* attributes as four colours */
+    PMD85SESSION_COLOR_BW = 0,     /* the black-and-white TV: white, half-bright, blink */
+    PMD85SESSION_COLOR_GREEN,      /* the same on a green monitor */
+    PMD85SESSION_COLOR_RGBM,       /* attributes as four colours */
     PMD85SESSION_COLOR_COLORACE,   /* the ColorACE modification: eight colours */
+    PMD85SESSION_COLOR_COUNT
 };
 
 /* What sits in the ROM-module slot -- which, on a PMD 85-2 or 2A, decides
@@ -172,9 +173,12 @@ int  pmd85session_module(const pmd85session *s);
 void pmd85session_reset(pmd85session *s);
 void pmd85session_hard_reset(pmd85session *s);
 
-/* LEDs (bit 0 yellow, 1 red, 2 blue) and the MegaModule page, -1 = none. */
+/* LEDs (bit 0 yellow, 1 red, 2 blue) and the MegaModule page, -1 = none;
+ * the size of the image in the MegaModule (a .mrm, or what FujiNet loaded
+ * last), 0 none: up to 32 KB it is a plain ROM module's worth. */
 int  pmd85session_leds(const pmd85session *s);
 int  pmd85session_mega_page(const pmd85session *s);
+int  pmd85session_mega_size(const pmd85session *s);
 
 /* ---- video ---------------------------------------------------------------- */
 

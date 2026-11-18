@@ -45,9 +45,9 @@ enum {
 
 /* Colour profiles (TColorProfile). */
 enum {
-    PMD85_COLOR_MONO = 0,
-    PMD85_COLOR_STANDARD,  /* white / half-bright, blinking -- the real TV */
-    PMD85_COLOR_COLOR,     /* attribute pairs mapped to four colours */
+    PMD85_COLOR_BW = 0,    /* white / half-bright, blinking: the black-and-white TV */
+    PMD85_COLOR_GREEN,     /* the same on a green monitor */
+    PMD85_COLOR_RGBM,      /* attribute pairs mapped to four colours */
     PMD85_COLOR_COLORACE,  /* ColorACE: two lines' attributes -> 8 colours */
     PMD85_COLOR_COUNT
 };
@@ -247,6 +247,7 @@ int pmd85host_tape_blocks(pmd85host_tape_block *out, int max, unsigned *serial);
 /* --- state for the frontends (any thread, relaxed) ------------------------- */
 int  pmd85host_led_state(void);    /* SystemPIO LED bits: 1 yellow 2 red 4 blue */
 int  pmd85host_mega_page(void);    /* current MegaModule page, -1 when absent */
+int  pmd85host_mega_size(void);    /* bytes of the image in it (file or FujiNet), 0 none */
 
 #ifdef __cplusplus
 }
