@@ -647,6 +647,50 @@ patch("lib/hardware/fnSystem.cpp", [
     ),
 ])
 
+# --- restartable runtime: TNFS gives up while shutting down -----------------
+# A TNFS request that fails while the runtime stops (its umount, or a close,
+# on a connection the server already dropped) slept out all its retries
+# (min_retry_ms each) in the thread being stopped, which the host then gave
+# up on after 5 s and detached. Give up at once instead. (The bus's shutdown
+# flag itself is lowered between runs by the entry wrapper's
+# reset_runtime_state().) From the Atari 800 app (v0.6.1).
+patch("lib/TNFSlib/tnfslib.cpp", [
+    (
+        '        // Make sure we wait before retrying\n'
+        '        fnSystem.delay(m_info->min_retry_ms);\n',
+        '        // Shutting down: nobody waits for the answer any more\n'
+        '        if (SYSTEM_BUS.getShuttingDown())\n'
+        '            return false;\n'
+        '\n'
+        '        // Make sure we wait before retrying\n'
+        '        fnSystem.delay(m_info->min_retry_ms);\n',
+    ),
+])
+
+# --- restartable runtime: the DriveWire bus lets go of its BoIP port --------
+# shutdown() left the Becker (BoIP) listener open; only the next run's
+# begin() closed it. Between a stop and the next start, a connect to the port
+# still succeeded (the session took it for another FujiNet), and the next
+# run's bind could lose to the old socket and retry every 5 s for good.
+patch("lib/bus/drivewire/drivewire.cpp", [
+    (
+        '    Debug_printf("Clearing Network Device array.\\n");\n'
+        '    _netDev.clear();\n'
+        '\n'
+        '    Debug_printf("All devices shut down.\\n");\n',
+        '    Debug_printf("Clearing Network Device array.\\n");\n'
+        '    _netDev.clear();\n'
+        '\n'
+        '#if defined(FUJINET_EMBEDDED)\n'
+        '    // the desktop app stops and starts FujiNet in one process\n'
+        '    if (isBoIP())\n'
+        '        _becker.end();\n'
+        '#endif\n'
+        '\n'
+        '    Debug_printf("All devices shut down.\\n");\n',
+    ),
+])
+
 # --- Drop in the desktop entry-point wrapper + export map -----------------
 desktop_dir = clone_dir / "desktop"
 desktop_dir.mkdir(exist_ok=True)

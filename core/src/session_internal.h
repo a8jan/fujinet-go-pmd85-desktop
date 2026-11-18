@@ -123,8 +123,12 @@ void audio_stop(pmd85session *s);
 int  fujinet_start(pmd85session *s);
 int  fujinet_port_in_use(int port);
 int  fujinet_wait_for_becker(pmd85session *s, int timeout_ms);
-void fujinet_stop(pmd85session *s);
+/* 1 when it stopped (or did not run); 0 when its thread did not end in time
+ * (a device blocked) and was left running: it cannot start again until it
+ * ends. */
+int  fujinet_stop(pmd85session *s);
 int  fujinet_copy_log(pmd85session *s, char *dst, int max);
+int  fujinet_read_log(pmd85session *s, pmd85_log_cursor *cur, char *dst, int max, int *reset);
 void fujinet_mix_audio(pmd85session *s, int16_t *buf, int nsamples, int rate);
 
 /* debugger (core/debugger) -- emulator-thread side except create/destroy */

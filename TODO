@@ -84,6 +84,22 @@ Next
   position; context menu: marker, move up/down, delete; Append Tape; auto
   stop (next file / marker / end); hex/dec. Previous/Next File (menu and
   browser) step over data blocks to the next header.
+- (done) FujiNet restart in-process, from the Atari app's v0.6.1: between
+  runs the images are unmounted, the hosts reset and the bus's shutdown
+  flag lowered (it made every TNFS request of the next run "succeed" with
+  garbage); TNFS gives up at once while shutting down; a runtime that does
+  not stop is not restarted on top of; the log pipe is close-on-exec. Ours
+  too: the DriveWire bus closes its BoIP listener at shutdown (it stayed
+  open into the next run). fujinet_restart_test lists SD and a local tnfsd
+  ($PMD85_TNFSD) across restarts. The console log window appends (a cursor
+  reader, fujinet_desktop_read_log) and keeps the reader's place.
+- Upstream (fujinet-firmware): the DriveWire bus's shutdown() leaving the
+  BoIP listener open, and setup() not lowering shuttingDown, affect any
+  in-process restart; worth a PR with the Atari app's SIO equivalents. Also
+  its shutdown() not shutting the devices down (a TODO there): the Fuji
+  device's hostMounted[] outlived the run, so MOUNT HOST of a host CONFIG
+  had browsed answered "mounted" without mounting (error 144 on OPEN
+  DIRECTORY). The wrapper calls fujiDevice::shutdown() for now.
 - (done) Hotkeys on Alt, as upstream (Ctrl is STOP, Shift the PMD's): Alt+F
   fullscreen, Alt+C colors (cycles), Alt+T tape browser, Alt+P tape
   play/stop, Alt+F5 RESET, Alt+Shift+F5 cold restart.

@@ -20,6 +20,7 @@
 
 #include <pthread.h>
 #include <sys/types.h>
+#include <fcntl.h>
 #include <unistd.h>
 
 #if defined(_WIN32)
@@ -43,6 +44,7 @@
 #include <vector>
 
 #include "fnSystem.h"
+#include "fujiDevice.h"
 
 extern void main_setup(int argc, char* argv[]);
 extern void fn_service_loop(void* param);
@@ -90,6 +92,7 @@ std::condition_variable g_stop_condition;
 std::thread g_runtime_thread;
 std::string g_last_error;
 bool g_running = false;
+bool g_detached = false;      /* stop gave up on a wedged thread that is still alive */
 bool g_host_stop = false;     /* the host asked the runtime to stop */
 int g_exit_code = -1;         /* -1 running or stopped by the host; else the reboot code */
 bool g_setup_complete = false;
@@ -103,6 +106,13 @@ double g_audio_resample_cursor = 0.0;
 std::mutex g_log_mutex;
 std::thread g_log_thread;
 std::string g_log_tail;
+/* The tail is a window on a log that only grows: g_log_base is the offset of
+ * its first byte and g_log_total of its end, counted from the first line this
+ * process captured. A new run starts a new log (g_log_epoch). Together they
+ * let a reader ask for "what came after byte N". From the Atari 800 app. */
+uint64_t g_log_base = 0;
+uint64_t g_log_total = 0;
+unsigned g_log_epoch = 0;
 std::string g_log_file_path;
 size_t g_log_file_size = 0;
 int g_log_read_fd = -1;
@@ -215,7 +225,9 @@ std::string sanitize_log_chunk(const char* data, size_t size) {
 
 void trim_log_tail_locked() {
     if (g_log_tail.size() > kMaxLogTailBytes) {
-        g_log_tail.erase(0, g_log_tail.size() - kMaxLogTailBytes);
+        const size_t drop = g_log_tail.size() - kMaxLogTailBytes;
+        g_log_tail.erase(0, drop);
+        g_log_base += drop;
     }
 }
 
@@ -239,6 +251,7 @@ void append_log_chunk_locked(const char* data, size_t size) {
         return;
     }
     g_log_tail.append(data, size);
+    g_log_total += size;
     trim_log_tail_locked();
 
     if (!g_log_file_path.empty()) {
@@ -373,6 +386,13 @@ void start_log_capture(const std::string& runtime_root) {
         host_log("fujinet: unable to create log pipe");
         return;
     }
+#if !defined(_WIN32)
+    /* A child spawned while capture runs must not inherit the pipe: its copy
+     * of the write end would keep the log thread from ever seeing EOF, and
+     * stop_log_capture() would wait for as long as the child lives. */
+    fcntl(log_pipe[0], F_SETFD, FD_CLOEXEC);
+    fcntl(log_pipe[1], F_SETFD, FD_CLOEXEC);
+#endif
 
     const int out_fd = stream_fd(stdout);
     const int err_fd = stream_fd(stderr);
@@ -396,6 +416,8 @@ void start_log_capture(const std::string& runtime_root) {
         g_stdout_fd = out_fd;
         g_stderr_fd = err_fd;
         g_log_tail.clear();
+        g_log_base = g_log_total;
+        g_log_epoch++;
         g_log_file_size = 0;
         g_log_file_path = runtime_root + "/fujinet-console.log";
         rewrite_log_file_locked();
@@ -571,6 +593,65 @@ FUJINET_ENTRY int fujinet_desktop_copy_recent_log(char* output, int maxBytes) {
     return static_cast<int>(copyable);
 }
 
+/* The log from a reader's place on. *cursor/*epoch name where the reader got
+ * to (all zero for a first read); they are advanced past what is copied (at
+ * most maxBytes - 1, NUL-terminated). *reset is set when that place is gone
+ * (or never was) -- a new run started the log afresh, or the bytes were
+ * trimmed off the front of the tail -- and the copy then begins at the oldest
+ * byte kept: the reader drops what it shows and starts over. Returns the
+ * byte count. */
+FUJINET_ENTRY int fujinet_desktop_read_log(uint64_t* cursor, unsigned* epoch, char* output,
+                                           int maxBytes, int* reset) {
+    if (cursor == nullptr || epoch == nullptr || output == nullptr || maxBytes <= 0) {
+        return 0;
+    }
+    output[0] = '\0';
+    std::lock_guard<std::mutex> lock(g_log_mutex);
+    const bool lost = *epoch != g_log_epoch || *cursor < g_log_base || *cursor > g_log_total;
+    if (lost) {
+        *epoch = g_log_epoch;
+        *cursor = g_log_base;
+    }
+    if (reset != nullptr) {
+        *reset = lost ? 1 : 0;
+    }
+    const size_t available = static_cast<size_t>(g_log_total - *cursor);
+    const size_t copyable = std::min(available, static_cast<size_t>(maxBytes - 1));
+    if (copyable > 0) {
+        memcpy(output, g_log_tail.data() + (*cursor - g_log_base), copyable);
+        output[copyable] = '\0';
+        *cursor += copyable;
+    }
+    return static_cast<int>(copyable);
+}
+
+/* Between two runs of one process (a restart): main_setup() runs again on
+ * the same globals, so what the last run left is undone here, on the
+ * runtime thread after main_shutdown_handler() -- mounted images first (they
+ * hold files on the hosts' filesystems, and a slot with a stale handle is
+ * skipped when the slots are read back from the config), then each host, as
+ * a first start finds them (the config fills in the names again). And the
+ * bus's shutdown flag: shutdown() raises it to break transactions in flight
+ * and nothing lowered it, so every TNFS request of the next run "succeeded"
+ * unanswered and parsed garbage. From the Atari 800 app (v0.6.1). */
+static void reset_runtime_state()
+{
+    if (theFuji == nullptr)
+        return;
+    /* What the SIO bus's shutdown does for the Atari and the DriveWire bus's
+     * does not (its device shutdown is a TODO): the base Fuji device's
+     * shutdown -- disks and hosts unmounted, and its hostMounted[] cache
+     * cleared. Left set, the next run's MOUNT HOST answered "mounted"
+     * without mounting, and CONFIG's OPEN DIRECTORY on a host it had been
+     * browsing failed (error 144, "no FileSystem set"). */
+    theFuji->fujiDevice::shutdown();
+    for (int i = 0; i < MAX_DISK_DEVICES; i++)
+        theFuji->fujicore_unmount_disk_image_success(i);
+    for (int i = 0; i < MAX_HOSTS; i++)
+        theFuji->get_host(i)->set_type(HOSTTYPE_UNINITIALIZED);
+    SYSTEM_BUS.shuttingDown = false;
+}
+
 FUJINET_ENTRY bool fujinet_desktop_start_runtime(
         const char* runtimeRootPath,
         const char* configPath,
@@ -584,6 +665,14 @@ FUJINET_ENTRY bool fujinet_desktop_start_runtime(
     std::unique_lock<std::mutex> lock(g_mutex);
     g_last_error.clear();
 
+    if (g_detached) {
+        if (g_running) {
+            set_last_error_locked("the previous FujiNet runtime is still running "
+                                  "(a device is blocked); it cannot start again yet");
+            return false;
+        }
+        g_detached = false;   /* it ended on its own after all */
+    }
     if (g_running) {
         return true;
     }
@@ -668,6 +757,7 @@ FUJINET_ENTRY bool fujinet_desktop_start_runtime(
             fn_service_loop(nullptr);
             const int code = fnSystem.get_reboot_code();
             main_shutdown_handler();
+            reset_runtime_state();
             fnSystem.clear_shutdown_request();
             stop_log_capture();
 
@@ -701,12 +791,17 @@ FUJINET_ENTRY bool fujinet_desktop_start_runtime(
     return false;
 }
 
-FUJINET_ENTRY void fujinet_desktop_stop_runtime() {
+/* 1 when the runtime has stopped (or none ran); 0 when it did not stop in
+ * time and was detached: it is still alive, and a start is refused until it
+ * ends. */
+FUJINET_ENTRY int fujinet_desktop_stop_runtime() {
     std::thread runtimeThread;
     {
         std::unique_lock<std::mutex> lock(g_mutex);
+        if (g_detached)
+            return g_running ? 0 : 1;
         if (!g_running && !g_runtime_thread.joinable()) {
-            return;
+            return 1;
         }
         g_host_stop = true;
         fnSystem.request_for_shutdown();
@@ -733,7 +828,8 @@ FUJINET_ENTRY void fujinet_desktop_stop_runtime() {
                 /* Leave g_running set: the detached thread is still alive and
                  * touching FujiNet's global state, so a subsequent start must
                  * not spawn a second thread on top of it. */
-                return;
+                g_detached = true;
+                return 0;
             }
         }
     }
@@ -751,6 +847,7 @@ FUJINET_ENTRY void fujinet_desktop_stop_runtime() {
         std::lock_guard<std::mutex> audioLock(g_audio_mutex);
         clear_audio_locked();
     }
+    return 1;
 }
 
 /* 1 while the runtime's service loop runs. */

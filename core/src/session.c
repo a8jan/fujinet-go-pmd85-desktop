@@ -1023,7 +1023,12 @@ int pmd85session_fujinet_restart(pmd85session *s)
         pthread_mutex_unlock(&s->lifecycle_mtx);
         return -1;
     }
-    fujinet_stop(s);
+    if (!fujinet_stop(s)) {
+        session_set_error(s, "FujiNet did not stop (a device is blocked); it cannot "
+                          "restart until it does");
+        pthread_mutex_unlock(&s->lifecycle_mtx);
+        return -1;
+    }
     rc = fujinet_start(s);
     if (rc == 0)
         fujinet_wait_for_becker(s, 10000);
@@ -1034,6 +1039,12 @@ int pmd85session_fujinet_restart(pmd85session *s)
 int pmd85session_fujinet_link(const pmd85session *s)
 {
     return s && s->running && pmd85host_becker_link_up();
+}
+
+int pmd85session_fujinet_read_log(pmd85session *s, pmd85_log_cursor *cur, char *dst, int max,
+                                  int *reset)
+{
+    return fujinet_read_log(s, cur, dst, max, reset);
 }
 
 int pmd85session_fujinet_copy_log(pmd85session *s, char *dst, int max)

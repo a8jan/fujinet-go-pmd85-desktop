@@ -253,6 +253,18 @@ const char *pmd85session_becker_endpoint(const pmd85session *s);
 const char *pmd85session_fujinet_warning(const pmd85session *s);
 const char *pmd85session_fujinet_webui_url(const pmd85session *s);
 int  pmd85session_fujinet_copy_log(pmd85session *s, char *dst, int max);
+/* The log from where a reader left off, so a window can append rather than
+ * replace. Start with a zeroed cursor. Copies at most max - 1 bytes (NUL
+ * terminated) and moves the cursor past them; call again for the rest.
+ * *reset is set when the reader's place is gone -- FujiNet restarted (a new
+ * log) or the oldest text was trimmed -- and the text then starts the log
+ * over: clear what is shown first. Returns the byte count. */
+typedef struct {
+    unsigned long long offset;
+    unsigned epoch;
+} pmd85_log_cursor;
+int  pmd85session_fujinet_read_log(pmd85session *s, pmd85_log_cursor *cur, char *dst, int max,
+                                   int *reset);
 /* ROM modules downloaded from FujiNet into the MegaModule since start, and
  * the last one's size. */
 int  pmd85session_rom_loads(const pmd85session *s, int *last_size);

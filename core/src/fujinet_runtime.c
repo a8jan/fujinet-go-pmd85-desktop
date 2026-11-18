@@ -34,11 +34,13 @@
 typedef int (*start_runtime_fn)(const char *root, const char *config,
                                 const char *sd, const char *data,
                                 int listen_port);
-typedef void (*stop_runtime_fn)(void);
+typedef int (*stop_runtime_fn)(void);   /* 1 stopped, 0 detached: still alive */
 typedef const char *(*last_error_fn)(void);
 typedef int (*read_audio_fn)(int16_t *out, int max_samples, int rate);
 typedef void (*clear_audio_fn)(void);
 typedef int (*copy_log_fn)(char *out, int max_bytes);
+typedef int (*read_log_fn)(unsigned long long *cursor, unsigned *epoch, char *out, int max,
+                           int *reset);
 typedef int (*int_fn)(void);
 
 /* One runtime per process: the library owns background threads (web admin,
@@ -54,6 +56,7 @@ static last_error_fn g_last_error;
 static read_audio_fn g_read_audio;
 static clear_audio_fn g_clear_audio;
 static copy_log_fn g_copy_log;
+static read_log_fn g_read_log;
 static int_fn g_is_running, g_exit_code;   /* optional: no watchdog without */
 
 /* the watchdog */
@@ -86,6 +89,7 @@ static int load_library_locked(pmd85session *s)
         g_handle, "fujinet_desktop_clear_audio");
     g_copy_log = (copy_log_fn)pmd85_dynlib_sym(
         g_handle, "fujinet_desktop_copy_recent_log");
+    g_read_log = (read_log_fn)pmd85_dynlib_sym(g_handle, "fujinet_desktop_read_log");
     g_is_running = (int_fn)pmd85_dynlib_sym(g_handle, "fujinet_desktop_is_running");
     g_exit_code = (int_fn)pmd85_dynlib_sym(g_handle, "fujinet_desktop_exit_code");
     if (!g_is_running || !g_exit_code)
@@ -307,10 +311,11 @@ int fujinet_wait_for_becker(pmd85session *s, int timeout_ms)
     }
 }
 
-void fujinet_stop(pmd85session *s)
+int fujinet_stop(pmd85session *s)
 {
     stop_runtime_fn stop = NULL;
     clear_audio_fn clear = NULL;
+    int stopped = 1;
 
     /* the watchdog first, so it cannot restart what is being stopped */
     if (g_watch_started) {
@@ -328,8 +333,28 @@ void fujinet_stop(pmd85session *s)
     }
     pthread_mutex_unlock(&g_mtx);
 
-    if (stop) stop();
+    if (stop) stopped = stop();
     if (clear) clear();
+    return stopped;
+}
+
+int fujinet_read_log(pmd85session *s, pmd85_log_cursor *cur, char *dst, int max, int *reset)
+{
+    read_log_fn fn;
+    unsigned long long off;
+    int n;
+    (void)s;
+    if (reset) *reset = 0;
+    if (!cur || !dst || max <= 0) return 0;
+    dst[0] = '\0';
+    pthread_mutex_lock(&g_mtx);
+    fn = g_read_log;
+    pthread_mutex_unlock(&g_mtx);
+    if (!fn) return 0;
+    off = cur->offset;
+    n = fn(&off, &cur->epoch, dst, max, reset);
+    cur->offset = off;
+    return n;
 }
 
 int fujinet_copy_log(pmd85session *s, char *dst, int max)
