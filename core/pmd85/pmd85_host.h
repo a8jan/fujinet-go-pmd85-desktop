@@ -187,6 +187,30 @@ int  pmd85host_becker_rx_pending(void);  /* any thread */
  * the size of the last one. Any thread. */
 int  pmd85host_becker_rom_loads(int *last_size);
 
+/* --- the PMD 32 disk drive -------------------------------------------------------
+ * GPMD85Emulator's Pmd32, four drives A-D. A disk goes in or out of the
+ * running drive (no machine rebuild), carried out by the emulator thread at
+ * its next frame; the call waits for it: 0 done, -1 with err set. Without a
+ * PMD 32 in the machine there is nothing to do: 0, and the config's images
+ * are what a machine with one will start with. An image is opened read and
+ * write (what the PMD writes lands in the file) unless write-protected.
+ * Any thread but the emulator's. */
+enum {
+    PMD85_DISK_INSERT = 1,   /* drive, path, wp */
+    PMD85_DISK_EJECT,        /* drive */
+    PMD85_DISK_PROTECT,      /* drive, wp */
+};
+int pmd85host_disk_command(int cmd, int drive, const char *path, int wp, char *err, int errsz);
+typedef struct {
+    int  present;            /* the machine has a PMD 32 */
+    char path[4][1024];      /* each drive's image, "" empty */
+    int  wp[4];
+    int  activity;           /* the drive's light: 0 idle, else 1 + drive (A = 1),
+                                plus 4 while it writes */
+} pmd85host_disk_state;
+/* As of the last frame. Any thread. */
+void pmd85host_disk_state_get(pmd85host_disk_state *out);
+
 /* --- the tape deck ------------------------------------------------------------
  * GPMD85Emulator's TapeBrowser: a .ptp/.pmd tape as a list of blocks, played
  * into the tape interface, stopping before the next header block; what the

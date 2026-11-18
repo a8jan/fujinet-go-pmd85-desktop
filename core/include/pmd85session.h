@@ -312,6 +312,27 @@ int  pmd85session_fujinet_read_log(pmd85session *s, pmd85_log_cursor *cur, char 
  * the last one's size. */
 int  pmd85session_rom_loads(const pmd85session *s, int *last_size);
 
+/* ---- the PMD 32 disk drive -------------------------------------------------
+ * Four drives, A-D, on the GPIO port (setting "pmd32"; the PMD 85-1, -2,
+ * -2A, -3 and the Consul 2717). Each drive's image and its write protection
+ * are settings ("pmd32_a".."pmd32_d", "pmd32_wp_a"..), kept across restarts
+ * and model changes; insert / eject / protect change the running drive at
+ * once (no restart) and the settings. An image is opened read and write:
+ * what the PMD writes lands in the file unless the drive is write-protected.
+ * Each returns 0, or -1 with pmd85session_last_error(). */
+int  pmd85session_disk_insert(pmd85session *s, int drive, const char *path, int wp);
+int  pmd85session_disk_eject(pmd85session *s, int drive);
+int  pmd85session_disk_protect(pmd85session *s, int drive, int wp);
+typedef struct {
+    int  enabled;            /* the PMD 32 is switched on */
+    int  present;            /* ... and the running machine has it */
+    char path[4][1024];      /* each drive's image, "" empty */
+    int  wp[4];
+    int  activity;           /* the drive's light: 0 idle, 1 + drive while busy
+                                (plus 4 writing) */
+} pmd85session_disk_info;
+void pmd85session_disk_get_info(pmd85session *s, pmd85session_disk_info *out);
+
 /* ---- the tape deck ---------------------------------------------------------
  * A .ptp/.pmd tape as a list of blocks (a file's header and body are one
  * block), played into the PMD's tape interface; it stops by itself before

@@ -39,6 +39,9 @@ struct _Pmd85Window {
     AdwWindowTitle *title;
     GtkMenuButton *menu_button;
     GtkWidget *led[3];
+    GtkWidget *disk_led;  /* the PMD 32's light */
+    GMenu *disk_menu;     /* Machine > PMD 32 Disks, rebuilt as the drives change */
+    char *disk_sig;       /* what disk_menu shows */
     guint status_id;
     int last_rom_loads;
     unsigned pad_event;   /* the last gamepad connect/disconnect toasted */
@@ -108,6 +111,191 @@ static void tape_actions(Pmd85Window *self, const pmd85session_tape_info *t)
     set_enabled(self, "tape-save", t->blocks > 0);
 }
 
+/* ---- the PMD 32's disks ----------------------------------------------------- */
+
+/* Machine > PMD 32 Disks: a submenu per drive, titled with its image; and
+ * the drive light. Rebuilt only when what it shows changed. */
+static void disks_refresh(Pmd85Window *self)
+{
+    pmd85session_disk_info info;
+    GString *sig = g_string_new(NULL);
+
+    pmd85session_disk_get_info(self->session, &info);
+    gtk_widget_set_visible(self->disk_led, info.present);
+    gtk_widget_set_opacity(self->disk_led, info.activity ? 1.0 : 0.3);
+    if (info.activity) {
+        g_autofree char *tip = g_strdup_printf("PMD 32: drive %c %s", 'A' + (info.activity - 1) % 4,
+                                               info.activity > 4 ? "writing" : "busy");
+        gtk_widget_set_tooltip_text(self->disk_led, tip);
+    } else {
+        gtk_widget_set_tooltip_text(self->disk_led, "PMD 32");
+    }
+
+    g_string_append_printf(sig, "%d", info.enabled);
+    for (int d = 0; d < 4; d++)
+        g_string_append_printf(sig, "|%s|%d", info.path[d], info.wp[d]);
+    if (self->disk_sig && !strcmp(self->disk_sig, sig->str)) {
+        g_string_free(sig, TRUE);
+        return;
+    }
+    g_free(self->disk_sig);
+    self->disk_sig = g_string_free(sig, FALSE);
+
+    g_menu_remove_all(self->disk_menu);
+    {   /* the drive itself, on and off (the same setting as Preferences'): a
+         * command that says what it does, under a title that says how it is --
+         * an unchecked toggle shows no box in GTK's menus */
+        GMenu *conn = g_menu_new();
+        g_menu_append(conn, info.enabled ? "Disconnect the PMD 32" : "Connect the PMD 32",
+                      info.enabled ? "win.pmd32(false)" : "win.pmd32(true)");
+        g_menu_append_section(self->disk_menu, info.enabled ? "Connected" : "Not connected",
+                              G_MENU_MODEL(conn));
+        g_object_unref(conn);
+    }
+    {
+        GMenu *drives = g_menu_new();
+        for (int d = 0; d < 4; d++) {
+            GMenu *sub = g_menu_new();
+            g_autofree char *base = info.path[d][0] ? g_path_get_basename(info.path[d]) : NULL;
+            g_autofree char *label = g_strdup_printf("%c: %s", 'A' + d, base ? base : "empty");
+            g_autofree char *ins = g_strdup_printf("win.disk-insert(%d)", d);
+            g_autofree char *ej = g_strdup_printf("win.disk-eject(%d)", d);
+            g_autofree char *wp = g_strdup_printf("win.disk-wp-%d", d);
+            g_autofree char *wpname = g_strdup_printf("disk-wp-%d", d);
+            GAction *a = g_action_map_lookup_action(G_ACTION_MAP(self), wpname);
+            g_menu_append(sub, "Insert Disk\xe2\x80\xa6", ins);
+            if (base)
+                g_menu_append(sub, "Eject", ej);
+            g_menu_append(sub, "Write Protected", wp);
+            if (a)
+                g_simple_action_set_state(G_SIMPLE_ACTION(a), g_variant_new_boolean(info.wp[d] != 0));
+            g_menu_append_submenu(drives, label, G_MENU_MODEL(sub));
+            g_object_unref(sub);
+        }
+        g_menu_append_section(self->disk_menu, NULL, G_MENU_MODEL(drives));
+        g_object_unref(drives);
+    }
+}
+
+typedef struct {
+    Pmd85Window *self;
+    int drive;
+} DiskPick;
+
+static void disk_insert_done(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+    DiskPick *pick = user_data;
+    Pmd85Window *self = pick->self;
+    const int d = pick->drive;
+    g_autoptr(GFile) file = gtk_file_dialog_open_finish(GTK_FILE_DIALOG(source), result, NULL);
+    g_autofree char *path = file ? g_file_get_path(file) : NULL;
+    pmd85session_disk_info info;
+
+    g_free(pick);
+    if (!path)
+        return;
+    pmd85session_disk_get_info(self->session, &info);
+    if (pmd85session_disk_insert(self->session, d, path, info.wp[d]) != 0) {
+        pmd85_window_toast(self, pmd85session_last_error(self->session));
+        return;
+    }
+    {
+        g_autofree char *base = g_path_get_basename(path);
+        g_autofree char *msg = info.enabled
+            ? g_strdup_printf("Drive %c: %s", 'A' + d, base)
+            : g_strdup_printf("Drive %c: %s -- the PMD 32 is not connected "
+                              "(PMD 32 Disks > Connect the PMD 32)", 'A' + d, base);
+        pmd85_window_toast(self, msg);
+    }
+    disks_refresh(self);
+}
+
+static void action_disk_insert(GSimpleAction *action, GVariant *param, gpointer user_data)
+{
+    Pmd85Window *self = PMD85_WINDOW(user_data);
+    const int d = g_variant_get_int32(param);
+    GtkFileDialog *dialog = gtk_file_dialog_new();
+    GListStore *filters = g_list_store_new(GTK_TYPE_FILE_FILTER);
+    GtkFileFilter *disks = gtk_file_filter_new();
+    GtkFileFilter *all = gtk_file_filter_new();
+    DiskPick *pick = g_new0(DiskPick, 1);
+    pmd85session_disk_info info;
+    g_autofree char *title = g_strdup_printf("Insert a Disk into Drive %c", 'A' + d);
+    (void)action;
+
+    gtk_file_filter_set_name(disks, "PMD 32 disks (.p32)");
+    gtk_file_filter_add_suffix(disks, "p32");
+    gtk_file_filter_set_name(all, "All files");
+    gtk_file_filter_add_pattern(all, "*");
+    g_list_store_append(filters, disks);
+    g_list_store_append(filters, all);
+    gtk_file_dialog_set_title(dialog, title);
+    gtk_file_dialog_set_filters(dialog, G_LIST_MODEL(filters));
+    pmd85session_disk_get_info(self->session, &info);
+    {   /* start where this drive's disk, or another one, came from */
+        const char *near = info.path[d][0] ? info.path[d] : NULL;
+        for (int k = 0; !near && k < 4; k++)
+            if (info.path[k][0]) near = info.path[k];
+        if (near) {
+            g_autoptr(GFile) f = g_file_new_for_path(near);
+            if (info.path[d][0])
+                gtk_file_dialog_set_initial_file(dialog, f);
+            else {
+                g_autoptr(GFile) dir = g_file_get_parent(f);
+                if (dir) gtk_file_dialog_set_initial_folder(dialog, dir);
+            }
+        }
+    }
+    pick->self = self;
+    pick->drive = d;
+    gtk_file_dialog_open(dialog, GTK_WINDOW(self), NULL, disk_insert_done, pick);
+    g_object_unref(disks);
+    g_object_unref(all);
+    g_object_unref(filters);
+    g_object_unref(dialog);
+}
+
+static void action_disk_eject(GSimpleAction *action, GVariant *param, gpointer user_data)
+{
+    Pmd85Window *self = PMD85_WINDOW(user_data);
+    const int d = g_variant_get_int32(param);
+    (void)action;
+    if (pmd85session_disk_eject(self->session, d) != 0) {
+        pmd85_window_toast(self, pmd85session_last_error(self->session));
+        return;
+    }
+    {
+        g_autofree char *msg = g_strdup_printf("Drive %c ejected", 'A' + d);
+        pmd85_window_toast(self, msg);
+    }
+    disks_refresh(self);
+}
+
+static void action_disk_wp(GSimpleAction *action, GVariant *value, gpointer user_data)
+{
+    Pmd85Window *self = PMD85_WINDOW(user_data);
+    const int d = g_action_get_name(G_ACTION(action))[8] - '0';   /* disk-wp-N */
+    if (pmd85session_disk_protect(self->session, d, g_variant_get_boolean(value)) != 0) {
+        pmd85_window_toast(self, pmd85session_last_error(self->session));
+        return;
+    }
+    g_simple_action_set_state(action, value);
+    disks_refresh(self);
+}
+
+/* Connect / Disconnect the PMD 32: a peripheral, so the machine restarts
+ * with it (or without it; the disks stay in the settings for next time) */
+static void action_pmd32(GSimpleAction *action, GVariant *value, gpointer user_data)
+{
+    Pmd85Window *self = PMD85_WINDOW(user_data);
+    const gboolean on = g_variant_get_boolean(value);
+    (void)action;
+    pmd85session_set_peripheral(self->session, "pmd32", on);
+    pmd85_window_toast(self, on ? "PMD 32 connected: the machine restarted with the disks in"
+                                : "PMD 32 disconnected: the machine restarted without it");
+    disks_refresh(self);
+}
+
 static gboolean status_tick(gpointer user_data)
 {
     Pmd85Window *self = PMD85_WINDOW(user_data);
@@ -155,6 +343,7 @@ static gboolean status_tick(gpointer user_data)
 
     for (i = 0; i < 3; i++)
         gtk_widget_set_opacity(self->led[i], (leds & (1 << i)) ? 1.0 : 0.18);
+    disks_refresh(self);
 
     {   /* a gamepad plugged in or out */
         char msg[160];
@@ -790,11 +979,11 @@ static void action_import_sd(GSimpleAction *action, GVariant *param, gpointer us
     GListStore *filters = g_list_store_new(GTK_TYPE_FILE_FILTER);
     GtkFileFilter *media = gtk_file_filter_new();
     GtkFileFilter *all = gtk_file_filter_new();
-    static const char *const exts[] = { "rmm", "mrm", "p32", "ptp", "pmd", NULL };
+    static const char *const exts[] = { "rmm", "mrm", NULL };   /* all FujiNet serves a PMD */
     (void)action;
     (void)param;
 
-    gtk_file_filter_set_name(media, "PMD 85 media (ROM modules, disks, tapes)");
+    gtk_file_filter_set_name(media, "ROM modules (.rmm .mrm)");
     for (int i = 0; exts[i]; i++)
         gtk_file_filter_add_suffix(media, exts[i]);
     gtk_file_filter_set_name(all, "All files");
@@ -947,7 +1136,7 @@ static GMenu *radio_menu(const char *action, const char *(*name_at)(int))
     return m;
 }
 
-static GMenu *build_menu(void)
+static GMenu *build_menu(GMenu *disks)
 {
     GMenu *menu = g_menu_new();
     GMenu *machine = g_menu_new();
@@ -982,6 +1171,7 @@ static GMenu *build_menu(void)
         g_menu_append(deck, "Eject", "win.tape-eject");
         g_menu_append_section(tape, NULL, G_MENU_MODEL(deck));
         g_menu_append_submenu(machine, "Tape", G_MENU_MODEL(tape));
+        g_menu_append_submenu(machine, "PMD 32 Disks", G_MENU_MODEL(disks));
         g_object_unref(file);
         g_object_unref(deck);
         g_object_unref(tape);
@@ -1021,6 +1211,9 @@ static const GActionEntry win_actions[] = {
     {.name = "debugger", .activate = action_debugger},
     {.name = "fullscreen", .activate = action_fullscreen},
     {.name = "import-sd", .activate = action_import_sd},
+    {.name = "disk-insert", .activate = action_disk_insert, .parameter_type = "i"},
+    {.name = "disk-eject", .activate = action_disk_eject, .parameter_type = "i"},
+    {.name = "pmd32", .activate = action_pmd32, .parameter_type = "b"},
     {.name = "sd-folder", .activate = action_sd_folder},
     {.name = "fujinet-restart", .activate = action_fujinet_restart},
     {.name = "module-file", .activate = action_module_file},
@@ -1086,6 +1279,20 @@ static GtkWidget *led_box(Pmd85Window *self)
     return box;
 }
 
+/* PMD85_OPEN_MENU=<submenu label>: the menu popped up (development) */
+static gboolean open_menu_later(gpointer user_data)
+{
+    Pmd85Window *self = PMD85_WINDOW(user_data);
+    const char *sub = getenv("PMD85_OPEN_MENU");
+    GtkPopover *pop;
+    disks_refresh(self);
+    gtk_menu_button_popup(self->menu_button);
+    pop = gtk_menu_button_get_popover(self->menu_button);
+    if (pop && sub && *sub && GTK_IS_POPOVER_MENU(pop))
+        g_object_set(pop, "visible-submenu", sub, NULL);
+    return G_SOURCE_REMOVE;
+}
+
 static void pmd85_window_dispose(GObject *object)
 {
     Pmd85Window *self = PMD85_WINDOW(object);
@@ -1093,6 +1300,8 @@ static void pmd85_window_dispose(GObject *object)
         g_source_remove(self->status_id);
         self->status_id = 0;
     }
+    g_clear_object(&self->disk_menu);
+    g_clear_pointer(&self->disk_sig, g_free);
     G_OBJECT_CLASS(pmd85_window_parent_class)->dispose(object);
 }
 
@@ -1135,11 +1344,24 @@ GtkWidget *pmd85_window_new(AdwApplication *app, pmd85session *session)
     adw_header_bar_set_title_widget(header, GTK_WIDGET(self->title));
     self->menu_button = GTK_MENU_BUTTON(gtk_menu_button_new());
     gtk_menu_button_set_icon_name(self->menu_button, "open-menu-symbolic");
-    menu = build_menu();
+    self->disk_menu = g_menu_new();
+    {   /* each drive's write protection: a toggle in its submenu */
+        for (int d = 0; d < 4; d++) {
+            g_autofree char *name = g_strdup_printf("disk-wp-%d", d);
+            GSimpleAction *a = g_simple_action_new_stateful(name, NULL, g_variant_new_boolean(FALSE));
+            g_signal_connect(a, "change-state", G_CALLBACK(action_disk_wp), self);
+            g_action_map_add_action(G_ACTION_MAP(self), G_ACTION(a));
+            g_object_unref(a);
+        }
+    }
+    menu = build_menu(self->disk_menu);
     gtk_menu_button_set_menu_model(self->menu_button, G_MENU_MODEL(menu));
     g_object_unref(menu);
     adw_header_bar_pack_end(header, GTK_WIDGET(self->menu_button));
     adw_header_bar_pack_start(header, led_box(self));
+    self->disk_led = gtk_image_new_from_icon_name("media-floppy-symbolic");
+    gtk_widget_set_visible(self->disk_led, FALSE);
+    adw_header_bar_pack_start(header, self->disk_led);
 
     self->display = PMD85_DISPLAY(pmd85_display_new(session));
     self->toasts = ADW_TOAST_OVERLAY(adw_toast_overlay_new());
@@ -1180,5 +1402,7 @@ GtkWidget *pmd85_window_new(AdwApplication *app, pmd85session *session)
         if (!strcmp(getenv("PMD85_OPEN_DEBUGGER"), "run"))
             pmd85debug_resume(pmd85session_debugger(session));
     }
+    if (getenv("PMD85_OPEN_MENU"))   /* the main menu, at that submenu ("" = top) */
+        g_timeout_add_seconds(2, open_menu_later, self);
     return GTK_WIDGET(self);
 }

@@ -1137,6 +1137,139 @@ int pmd85host_tape_blocks(pmd85host_tape_block *out, int max, unsigned *serial)
     return n;
 }
 
+/* ---- the PMD 32's disks ---------------------------------------------------- */
+
+struct DiskRequest {
+    int cmd = 0, drive = 0, wp = 0;
+    std::string path;
+    bool pending = false, done = false;
+    int rc = -1;
+    std::string err;
+};
+static std::mutex g_disk_caller_mtx;      /* one command at a time */
+static std::mutex g_disk_req_mtx;
+static std::condition_variable g_disk_req_cv;
+static DiskRequest g_disk_req;
+static std::mutex g_disk_state_mtx;
+static pmd85host_disk_state g_disk_state;
+
+int pmd85host_disk_command(int cmd, int drive, const char *path, int wp, char *err, int errsz)
+{
+    std::lock_guard<std::mutex> one(g_disk_caller_mtx);
+    std::unique_lock<std::mutex> lk(g_disk_req_mtx);
+    g_disk_req = DiskRequest();
+    g_disk_req.cmd = cmd;
+    g_disk_req.drive = drive;
+    g_disk_req.path = path ? path : "";
+    g_disk_req.wp = wp ? 1 : 0;
+    g_disk_req.pending = true;
+    if (!g_disk_req_cv.wait_for(lk, std::chrono::seconds(1), [] { return g_disk_req.done; })) {
+        g_disk_req.pending = false;
+        if (err && errsz > 0)
+            snprintf(err, (size_t)errsz, "The PMD is not running (stopped, or held by the debugger)");
+        return -1;
+    }
+    if (err && errsz > 0)
+        snprintf(err, (size_t)errsz, "%s", g_disk_req.err.c_str());
+    return g_disk_req.rc;
+}
+
+void pmd85host_disk_state_get(pmd85host_disk_state *out)
+{
+    if (!out) return;
+    std::lock_guard<std::mutex> lk(g_disk_state_mtx);
+    *out = g_disk_state;
+}
+
+static int disk_run(PmdMachine *m, const DiskRequest &req, std::string &err)
+{
+    const int d = req.drive;
+    if (d < 0 || d > 3) {
+        err = "No such drive";
+        return -1;
+    }
+    /* the config is what a rebuilt machine starts with, and the names shown */
+    char *cpath = m->cfg.pmd32_drive[d];
+    const size_t cmax = sizeof m->cfg.pmd32_drive[d];
+    switch (req.cmd) {
+    case PMD85_DISK_INSERT: {
+        const char *p = req.path.c_str();
+        if (!FileExists(p)) {
+            err = "Cannot open " + req.path;
+            return -1;
+        }
+        {   /* upstream opens an image read and write, protected or not */
+            FILE *t = fopen(p, "rb+");
+            if (!t) {
+                err = req.path + " is read-only: copy it somewhere writable";
+                return -1;
+            }
+            fclose(t);
+        }
+        if (m->pmd32) {
+            int r = m->pmd32->InsertDisk(DRIVE_A + d, p, req.wp != 0);
+            if (r != RESULT_OK) {
+                m->pmd32->RemoveDisk(DRIVE_A + d);
+                cpath[0] = '\0';
+                err = "Cannot use " + req.path + " as a PMD 32 disk";
+                return -1;
+            }
+        }
+        snprintf(cpath, cmax, "%s", p);
+        m->cfg.pmd32_wp[d] = req.wp;
+        return 0;
+    }
+    case PMD85_DISK_EJECT:
+        if (m->pmd32) m->pmd32->RemoveDisk(DRIVE_A + d);
+        cpath[0] = '\0';
+        return 0;
+    case PMD85_DISK_PROTECT:
+        if (m->pmd32) m->pmd32->SetWpDisk(DRIVE_A + d, req.wp != 0);
+        m->cfg.pmd32_wp[d] = req.wp;
+        return 0;
+    }
+    err = "Unknown disk command";
+    return -1;
+}
+
+static void disk_publish(PmdMachine *m)
+{
+    pmd85host_disk_state st;
+    memset(&st, 0, sizeof st);
+    if (m) {
+        st.present = m->pmd32 != nullptr;
+        for (int d = 0; d < 4; d++) {
+            snprintf(st.path[d], sizeof st.path[d], "%s", m->cfg.pmd32_drive[d]);
+            st.wp[d] = m->cfg.pmd32_wp[d];
+        }
+        st.activity = m->pmd32 ? m->pmd32->diskIcon : 0;
+    }
+    std::lock_guard<std::mutex> lk(g_disk_state_mtx);
+    g_disk_state = st;
+}
+
+/* the pending command, if any (emulator thread, between frames) */
+static void disk_service(PmdMachine *m)
+{
+    DiskRequest req;
+    {
+        std::lock_guard<std::mutex> lk(g_disk_req_mtx);
+        if (!g_disk_req.pending) return;
+        req = g_disk_req;
+        g_disk_req.pending = false;
+    }
+    std::string err;
+    const int rc = disk_run(m, req, err);
+    disk_publish(m);
+    {
+        std::lock_guard<std::mutex> lk(g_disk_req_mtx);
+        g_disk_req.rc = rc;
+        g_disk_req.err = err;
+        g_disk_req.done = true;
+    }
+    g_disk_req_cv.notify_all();
+}
+
 void pmd85host_tape_state_get(pmd85host_tape_state *out)
 {
     if (!out) return;
@@ -1516,6 +1649,7 @@ int pmd85host_core_start(const pmd85host_config *cfg)
     tape_attach(g_machine);
     publish_state(g_machine);
     tape_publish();
+    disk_publish(g_machine);
     return 1;
 }
 
@@ -1524,6 +1658,7 @@ void pmd85host_core_stop(void)
     delete g_machine;
     g_machine = nullptr;
     publish_state(nullptr);
+    disk_publish(nullptr);
 }
 
 /* The latest pointer into the Mouse 602 (emulator thread, between frames).
@@ -1622,6 +1757,7 @@ void pmd85host_core_run_frame(void)
     }
 
     mouse_service(g_machine);
+    disk_service(g_machine);
 
     g_tape_settings.flash = g_tape_flash.load() != 0;
     g_tape_settings.monitoring = g_tape_sound.load() != 0;
@@ -1632,6 +1768,7 @@ void pmd85host_core_run_frame(void)
     g_machine->RunFrame();
     publish_state(g_machine);
     tape_publish();
+    disk_publish(g_machine);
 }
 
 void pmd85host_set_becker_trace(Pmd85BeckerTrace fn) { PmdBecker::SetTrace(fn); }

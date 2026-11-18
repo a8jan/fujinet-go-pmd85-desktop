@@ -204,6 +204,14 @@ static void build_config(pmd85session *s, pmd85host_config *c)
     c->mif85 = s->opts.mif85;
     c->mouse602 = s->opts.mouse602;
     c->pmd32 = s->opts.pmd32;
+    for (int d = 0; d < 4; d++) {
+        char key[16];
+        snprintf(key, sizeof key, "pmd32_%c", 'a' + d);
+        snprintf(c->pmd32_drive[d], sizeof c->pmd32_drive[d], "%s",
+                 pmd85session_get_str(s, key, ""));
+        snprintf(key, sizeof key, "pmd32_wp_%c", 'a' + d);
+        c->pmd32_wp[d] = pmd85session_get_int(s, key, 0) ? 1 : 0;
+    }
     c->joystick_gpio0 = s->opts.joystick ? 1 : 0;   /* the host leaves A to a PMD 32 */
     c->joystick_gpio1 = s->opts.joystick ? 1 : 0;
     c->exchange_zy = pmd85session_get_int(s, "exchange_zy", 1) ? 1 : 0;
@@ -822,6 +830,81 @@ void pmd85session_release_all(pmd85session *s)
 }
 
 /****************************************************************************/
+/** The PMD 32's disks                                                      **/
+/****************************************************************************/
+
+static void disk_keys(int drive, char *path_key, char *wp_key)
+{
+    snprintf(path_key, 16, "pmd32_%c", 'a' + drive);
+    snprintf(wp_key, 16, "pmd32_wp_%c", 'a' + drive);
+}
+
+static int disk_cmd(pmd85session *s, int cmd, int drive, const char *path, int wp)
+{
+    char err[512] = "";
+    if (!s->running) return 0;   /* the settings are what the next start uses */
+    if (pmd85host_disk_command(cmd, drive, path, wp, err, sizeof err) != 0) {
+        session_set_error(s, "%s", err);
+        return -1;
+    }
+    return 0;
+}
+
+int pmd85session_disk_insert(pmd85session *s, int drive, const char *path, int wp)
+{
+    char pk[16], wk[16];
+    if (!s || drive < 0 || drive > 3 || !path || !*path) {
+        if (s) session_set_error(s, "No disk image given");
+        return -1;
+    }
+    if (disk_cmd(s, PMD85_DISK_INSERT, drive, path, wp) != 0) return -1;
+    disk_keys(drive, pk, wk);
+    pmd85session_set_str(s, pk, path);
+    pmd85session_set_int(s, wk, wp ? 1 : 0);
+    return 0;
+}
+
+int pmd85session_disk_eject(pmd85session *s, int drive)
+{
+    char pk[16], wk[16];
+    if (!s || drive < 0 || drive > 3) return -1;
+    if (disk_cmd(s, PMD85_DISK_EJECT, drive, NULL, 0) != 0) return -1;
+    disk_keys(drive, pk, wk);
+    pmd85session_set_str(s, pk, "");
+    return 0;
+}
+
+int pmd85session_disk_protect(pmd85session *s, int drive, int wp)
+{
+    char pk[16], wk[16];
+    if (!s || drive < 0 || drive > 3) return -1;
+    if (disk_cmd(s, PMD85_DISK_PROTECT, drive, NULL, wp) != 0) return -1;
+    disk_keys(drive, pk, wk);
+    pmd85session_set_int(s, wk, wp ? 1 : 0);
+    return 0;
+}
+
+void pmd85session_disk_get_info(pmd85session *s, pmd85session_disk_info *out)
+{
+    if (!out) return;
+    memset(out, 0, sizeof *out);
+    if (!s) return;
+    out->enabled = s->opts.pmd32;
+    for (int d = 0; d < 4; d++) {
+        char pk[16], wk[16];
+        disk_keys(d, pk, wk);
+        snprintf(out->path[d], sizeof out->path[d], "%s", pmd85session_get_str(s, pk, ""));
+        out->wp[d] = pmd85session_get_int(s, wk, 0);
+    }
+    if (s->running) {
+        pmd85host_disk_state st;
+        pmd85host_disk_state_get(&st);
+        out->present = st.present;
+        out->activity = st.activity;
+    }
+}
+
+/****************************************************************************/
 /** Joysticks: every source merged (joy_input.h)                           **/
 /****************************************************************************/
 
@@ -1267,10 +1350,11 @@ static int ext_is(const char *ext, const char *want)
 int pmd85session_import_media(pmd85session *s, const char *src_path,
                               char *dest_out, int dest_sz)
 {
-    /* ROM-module images and PMD 32 disk images go to FujiNet's SD folder, to
-     * be mounted from FujiNet CONFIG; tapes too, for when FujiNet serves them.
-     * A monitor ROM is the machine's own business. */
-    static const char *const k_sd_exts[] = { "rmm", "mrm", "p32", "ptp", "pmd", NULL };
+    /* ROM-module images go to FujiNet's SD folder, to be mounted from
+     * FujiNet CONFIG -- all FujiNet serves a PMD (no disks, no tapes: the
+     * PMD 32's disks and the tape deck are the emulator's). A monitor ROM is
+     * the machine's own business. */
+    static const char *const k_sd_exts[] = { "rmm", "mrm", NULL };
     const char *ext = path_ext(src_path);
     const char *base = path_basename(src_path);
     const char *dir = NULL;
@@ -1284,8 +1368,7 @@ int pmd85session_import_media(pmd85session *s, const char *src_path,
 
     if (!dir) {
         session_set_error(s, "Unsupported media type \".%s\" (expected a ROM "
-                          "module .rmm .mrm, a disk .p32, a tape .ptp .pmd, "
-                          "or a monitor ROM .rom)", ext);
+                          "module .rmm .mrm, or a monitor ROM .rom)", ext);
         return -1;
     }
     if (!dir[0]) {

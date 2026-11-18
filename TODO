@@ -123,6 +123,16 @@ Next
   the mouse's (middle = both, as upstream); leaving the screen and coming
   back is no move; the host pointer hidden over the picture (Input page).
   mouse_test reads port 8Ch with a PMD program.
+- (done) PMD 32 disk drive (GPMD85Emulator's Pmd32, drives A-D on GPIO):
+  Machine > PMD 32 Disks (a submenu per drive: Insert Disk..., Eject, Write
+  Protected; "Connect / Disconnect the PMD 32" under a Connected / Not connected title), changed in the running
+  drive without a restart; images and protection in settings (pmd32_a..d,
+  pmd32_wp_a..d), kept across model changes; a floppy light by the LEDs.
+  An 85-3 boots MIKROS (CP/M) from drive A. pmd32_test.
+- PMD 32, later: the SD-card extensions (sdRoot, images.cfg geometries,
+  extraCommands) in Preferences; a new blank disk; drag and drop.
+- Import to SD Card takes ROM modules only (.rmm .mrm): FujiNet serves a
+  PMD nothing else.
 - Gamepads, later: remappable buttons (a pad button -> a PMD key, as the
   Atari app's Input page), keys as a joystick (upstream's JT_KEYS), the
   drawn Controllers window. The flatpak manifest needs --device=all (or
