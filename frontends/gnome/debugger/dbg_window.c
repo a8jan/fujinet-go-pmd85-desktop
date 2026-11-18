@@ -51,10 +51,12 @@
 #define PMD85DEBUG_SPACE_PHYS 1
 #define PMD85DEBUG_BP_PHYS 0
 
-/* A pale green, the PMD-60.1 monitor's phosphor: dark text stays legible on
- * it in either theme. */
-#define ACCENT_RGB 0xA5E6A0u
-#define ACCENT_INK_RGB 0x000000u
+/* The blue of the PMD 85's K0-K11 keys (#6894B2, as in the app's icon) with
+ * white on it, as on the keys -- dimmed to 82 % so the white reads at 4.6:1
+ * in either theme. KEY_RGB itself is the accent as text on a dark theme. */
+#define ACCENT_RGB 0x557992u
+#define ACCENT_INK_RGB 0xFFFFFFu
+#define KEY_RGB 0x6894B2u
 
 #define DISASM_WINDOW 48
 #define MEM_ROWS 32
@@ -444,14 +446,14 @@ static GtkWidget *padded(GtkWidget *widget)
     return widget;
 }
 
-/* The accent is pale, so a line marked in it keeps dark text on either
- * theme. */
+/* A line marked in the accent: white on blue, on either theme. */
 static void accent_tag(GtkTextView *view, const char *name)
 {
-    char rgb[16];
+    char rgb[16], ink[16];
     g_snprintf(rgb, sizeof rgb, "#%06x", ACCENT_RGB);
+    g_snprintf(ink, sizeof ink, "#%06x", ACCENT_INK_RGB);
     gtk_text_buffer_create_tag(gtk_text_view_get_buffer(view), name,
-                               "paragraph-background", rgb, "foreground", "#000000", NULL);
+                               "paragraph-background", rgb, "foreground", ink, NULL);
 }
 
 /* Messages from Load Symbols and Save land in the console's transcript and,
@@ -1379,8 +1381,11 @@ static void install_css(void)
         "button.pmd85dbg-toggle:checked, togglebutton.pmd85dbg-toggle:checked,"
         " button.pmd85dbg-accent {"
         " background-image: none; background-color: #%06x; color: #%06x; }"
-        " .pmd85dbg-accent-text { color: #2e7d32; }",
-        ACCENT_RGB, ACCENT_INK_RGB);
+        /* the accent as text: a darker blue on light, the key blue on dark */
+        " .pmd85dbg-accent-text { color: #2f5f80; }"
+        " @media (prefers-color-scheme: dark) {"
+        " .pmd85dbg-accent-text { color: #%06x; } }",
+        ACCENT_RGB, ACCENT_INK_RGB, KEY_RGB);
     gtk_css_provider_load_from_string(css, buf);
     gtk_style_context_add_provider_for_display(
         gdk_display_get_default(), GTK_STYLE_PROVIDER(css),
@@ -2478,8 +2483,13 @@ static GtkWidget *build_memory(DbgWin *state)
     gtk_box_append(GTK_BOX(box), build_search_bar(state));
     gtk_box_append(GTK_BOX(box), mem);
     /* the highlight covers a few bytes, not a paragraph */
-    gtk_text_buffer_create_tag(gtk_text_view_get_buffer(state->mem_view), "mark",
-                               "background", "#8BC34A", "foreground", "#000000", NULL);
+    {
+        char rgb[16], ink[16];
+        g_snprintf(rgb, sizeof rgb, "#%06x", ACCENT_RGB);
+        g_snprintf(ink, sizeof ink, "#%06x", ACCENT_INK_RGB);
+        gtk_text_buffer_create_tag(gtk_text_view_get_buffer(state->mem_view), "mark",
+                                   "background", rgb, "foreground", ink, NULL);
+    }
     state->mem_hl = FALSE;
     return padded(box);
 }
