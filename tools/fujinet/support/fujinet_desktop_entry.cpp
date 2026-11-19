@@ -46,6 +46,20 @@
 #include "fnSystem.h"
 #include "fujiDevice.h"
 
+/* Firmware PR #2378 moved the Fuji device from the global theFuji into
+ * SYSTEM_BUS.theFuji (and shuttingDown behind setShuttingDown()). Reach both
+ * layouts, so the pin can sit on either side of that change. The int/long
+ * overloads prefer the member form and fall back to the old globals. From
+ * the Atari 800 app (3f3bded). */
+extern fujiDevice *theFuji;
+namespace fn_compat {
+template <class B> auto fuji(B &bus, int) -> decltype(bus.theFuji) { return bus.theFuji; }
+template <class B> fujiDevice *fuji(B &, long) { return ::theFuji; }
+template <class B> auto clear_shutting(B &bus, int) -> decltype(bus.setShuttingDown(false), void()) { bus.setShuttingDown(false); }
+template <class B> void clear_shutting(B &bus, long) { bus.shuttingDown = false; }
+}
+static inline fujiDevice *the_fuji() { return fn_compat::fuji(SYSTEM_BUS, 0); }
+
 extern void main_setup(int argc, char* argv[]);
 extern void fn_service_loop(void* param);
 extern void main_shutdown_handler();
@@ -636,7 +650,7 @@ FUJINET_ENTRY int fujinet_desktop_read_log(uint64_t* cursor, unsigned* epoch, ch
  * unanswered and parsed garbage. From the Atari 800 app (v0.6.1). */
 static void reset_runtime_state()
 {
-    if (theFuji == nullptr)
+    if (the_fuji() == nullptr)
         return;
     /* What the SIO bus's shutdown does for the Atari and the DriveWire bus's
      * does not (its device shutdown is a TODO): the base Fuji device's
@@ -644,12 +658,12 @@ static void reset_runtime_state()
      * cleared. Left set, the next run's MOUNT HOST answered "mounted"
      * without mounting, and CONFIG's OPEN DIRECTORY on a host it had been
      * browsing failed (error 144, "no FileSystem set"). */
-    theFuji->fujiDevice::shutdown();
+    the_fuji()->fujiDevice::shutdown();
     for (int i = 0; i < MAX_DISK_DEVICES; i++)
-        theFuji->fujicore_unmount_disk_image_success(i);
+        the_fuji()->fujicore_unmount_disk_image_success(i);
     for (int i = 0; i < MAX_HOSTS; i++)
-        theFuji->get_host(i)->set_type(HOSTTYPE_UNINITIALIZED);
-    SYSTEM_BUS.shuttingDown = false;
+        the_fuji()->get_host(i)->set_type(HOSTTYPE_UNINITIALIZED);
+    fn_compat::clear_shutting(SYSTEM_BUS, 0);
 }
 
 FUJINET_ENTRY bool fujinet_desktop_start_runtime(
