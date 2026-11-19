@@ -60,8 +60,8 @@ static uint32_t keysym_for_char(unichar chr, BOOL keypad)
     case 0x09: case 0x19:         return XK_TAB;      /* 0x19: Shift+Tab */
     case 0x1B:                    return XK_ESCAPE;
     default:
-        /* F1..F11 are the PMD's K0..K10 (F12 is the debugger's) */
-        if (chr >= NSF1FunctionKey && chr <= NSF1FunctionKey + 10)
+        /* F1..F12 are the PMD's K0..K11 (the debugger is Option+F12) */
+        if (chr >= NSF1FunctionKey && chr <= NSF1FunctionKey + 11)
             return XK_F1 + (uint32_t)(chr - NSF1FunctionKey);
         return 0;
     }
@@ -89,6 +89,9 @@ void PmdForwardKey(pmd85session *session, NSEvent *event, int down)
         return;   /* the app's (or the system's), not the PMD's */
     if (down && event.isARepeat)
         return;   /* the PMD repeats by itself */
+    if (down && (event.modifierFlags & NSEventModifierFlagOption) &&
+        event.keyCode == 111 /* kVK_F12 */)
+        return;   /* Option+F12: the debugger's, as Alt+F12 elsewhere */
     if (!PmdKeyFromEvent(event, &keysym, &unicode))
         return;
     pmd85session_key(session, down, keysym, unicode,

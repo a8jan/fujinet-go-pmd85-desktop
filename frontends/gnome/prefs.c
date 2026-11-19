@@ -354,10 +354,10 @@ static AdwPreferencesPage *machine_page(PrefsState *st)
 
     adw_preferences_group_set_title(keyb, "Keyboard");
     adw_preferences_group_set_description(keyb,
-        "F1\xe2\x80\x93" "F11 are K0\xe2\x80\x93" "K10, Esc and Ctrl are STOP, "
-        "Tab is C-D, ` is WRK, PgUp/PgDn are RCL/CLR. The app's keys: F12 debugger, "
+        "F1\xe2\x80\x93" "F12 are K0\xe2\x80\x93" "K11, Esc and Ctrl are STOP, "
+        "Tab is C-D, ` is WRK, PgUp/PgDn are RCL/CLR. The app's keys: "
         "Alt+F fullscreen, Alt+C colors, Alt+T tape browser, Alt+P tape play/stop, "
-        "Alt+F5 RESET, Alt+Shift+F5 cold restart.");
+        "Alt+F5 RESET, Alt+Shift+F5 cold restart, Alt+F12 debugger.");
     adw_preferences_group_add(keyb, switch_row("Swap Z and Y",
         "For QWERTZ keyboards", pmd85session_get_int(s, "exchange_zy", 1),
         "exchange_zy", G_CALLBACK(keyboard_changed), st));

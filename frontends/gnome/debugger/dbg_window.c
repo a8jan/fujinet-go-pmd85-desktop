@@ -23,7 +23,7 @@
  * can be popped out into a window of its own (Pop Out, then Dock; closing
  * that window docks it); one tab always stays in the main window. Keys: F5
  * run/stop, F7 step, F8 step over, Shift+F8 step out, F9 breakpoint on the
- * selected line, F12 close.
+ * selected line, F12 or Alt+F12 close.
  *
  * The engine is engaged only while this window is showing: showing it
  * engages and stops the machine, hiding it releases the engine and lets the
@@ -2232,7 +2232,7 @@ static void on_pop_out(GtkButton *button, gpointer user_data)
     pop_out_tab(state, current_tab(state));
 }
 
-/* Closing hides: the machine runs on, and the window is back on F12. */
+/* Closing hides: the machine runs on, and the window is back on Alt+F12. */
 static void hide_window(DbgWin *state)
 {
     int tab;
@@ -2254,7 +2254,7 @@ static gboolean on_key(GtkEventControllerKey *controller, guint keyval, guint co
         if (modifiers & GDK_SHIFT_MASK) on_step_out(NULL, state); else on_step_over(NULL, state);
         return TRUE;
     case GDK_KEY_F9: toggle_selected(state); return TRUE;
-    case GDK_KEY_F12: hide_window(state); return TRUE;
+    case GDK_KEY_F12: hide_window(state); return TRUE;   /* with Alt or without */
     default: return FALSE;
     }
 }

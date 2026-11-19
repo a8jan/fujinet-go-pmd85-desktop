@@ -1,14 +1,15 @@
 /*
  * Pmd85Window: main window of the GNOME frontend. Header bar + menu over the
  * emulator display; keyboard capture routes every key to the PMD 85 except
- * F12 (the debugger) and the Alt hotkeys (upstream GPMD85's): Alt+F
- * fullscreen, Alt+C colors, Alt+T tape browser, Alt+P tape play/stop,
- * Alt+F5 RESET, Alt+Shift+F5 cold restart. Ctrl (STOP) and Shift are the
+ * the Alt hotkeys (upstream GPMD85's, and the debugger): Alt+F fullscreen,
+ * Alt+C colors, Alt+T tape browser, Alt+P tape play/stop, Alt+F5 RESET,
+ * Alt+Shift+F5 cold restart, Alt+F12 debugger. Ctrl (STOP) and Shift are the
  * PMD's own modifiers, so no hotkey uses them.
  *
  * The PMD keeps more of the keyboard than the other family apps: its function
- * keys K0..K10 are F1..F11 (FujiNet CONFIG boots with K10 = F11), so neither
- * F10 (GNOME's menu key) nor F11 (fullscreen) can be the window's. No
+ * keys K0..K11 are F1..F12 (FujiNet CONFIG boots with K10 = F11), so neither
+ * F10 (GNOME's menu key), F11 (fullscreen) nor F12 (the family's debugger
+ * key) can be the window's. No
  * on-screen input panels are shown unless the user asks for them.
  *
  * Structure from fujinet-go-coco-desktop's window.c.
@@ -396,6 +397,9 @@ static gboolean hotkey(Pmd85Window *self, guint k, GdkModifierType state)
     case GDK_KEY_F5:
         g_action_group_activate_action(g, (state & GDK_SHIFT_MASK) ? "cold" : "reset", NULL);
         return TRUE;
+    case GDK_KEY_F12:
+        pmd85_debugger_toggle(GTK_WINDOW(self), self->session);
+        return TRUE;
     }
     return FALSE;
 }
@@ -413,12 +417,6 @@ static gboolean window_key(Pmd85Window *self, guint keyval,
     }
     if (down && (state & GDK_ALT_MASK) && hotkey(self, k, state)) {
         self->hot_key = k;
-        return TRUE;
-    }
-
-    if (keyval == GDK_KEY_F12) {
-        if (down)
-            pmd85_debugger_toggle(GTK_WINDOW(self), self->session);
         return TRUE;
     }
 
@@ -1193,7 +1191,7 @@ static GMenu *build_menu(GMenu *disks)
     g_menu_append(fujinet, "Open SD Folder", "win.sd-folder");
     g_menu_append_section(menu, "FujiNet", G_MENU_MODEL(fujinet));
 
-    g_menu_append(tail, "Debugger (F12)", "win.debugger");
+    g_menu_append(tail, "Debugger (Alt+F12)", "win.debugger");
     g_menu_append(tail, "Preferences\xe2\x80\xa6", "win.preferences");
     g_menu_append(tail, "About FujiNet Go PMD 85", "win.about");
     g_menu_append_section(menu, NULL, G_MENU_MODEL(tail));

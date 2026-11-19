@@ -74,6 +74,7 @@ struct pmd85session {
     pmd85session_frame_cb frame_cb;
     void *frame_cb_ctx;
     volatile uint64_t frame_count;
+    volatile uint64_t frames_dropped;   /* given up after stalls (pacer) */
 
     /* ---- vsync ticks (accepted, never locked to: see notify_vsync) ---- */
     pthread_mutex_t vs_mtx;

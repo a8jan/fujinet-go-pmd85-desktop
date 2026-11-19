@@ -122,10 +122,11 @@
  * the table. */
 static unsigned special_scancode(uint32_t keysym)
 {
-    /* Function keys: the PMD's K0..K10 (GPMD85Emulator's table puts K0 on F1).
-     * FujiNet CONFIG boots with K10, so F11 must reach the machine. F12 (K11)
-     * is the family's debugger key and is handled by the caller. */
-    if (keysym >= XKS_F1 && keysym <= XKS_F11)
+    /* Function keys: the PMD's K0..K11 (GPMD85Emulator's table puts K0 on F1).
+     * FujiNet CONFIG boots with K10, so F11 must reach the machine, and F12 is
+     * K11: the debugger is on Alt+F12 (Option+F12 on macOS), which the
+     * frontends take before they get here. */
+    if (keysym >= XKS_F1 && keysym <= XKS_F12)
         return HK_F1 + (keysym - XKS_F1);
 
     /* Numeric keypad digits. HID puts KP_1..KP_9 before KP_0. */
@@ -245,11 +246,6 @@ int pmd85_key_from_event(uint32_t keysym, uint32_t unicode, int ctrl_down,
      * arguments it passes pmd85session_key. */
     (void)ctrl_down;
     (void)shift_down;
-
-    /* Reserved by the frontends: the debugger. Never forwarded, so a program
-     * on the machine cannot swallow it. */
-    if (keysym == XKS_F12)
-        return 0;
 
     scancode = special_scancode(keysym);
     if (!scancode) {

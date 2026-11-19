@@ -199,7 +199,7 @@ static NSView *blank(void)
                            kind:KIND_KEYBOARD] ],
         @[ blank(), [self check:@"Numeric keypad types digits and operators" key:"numpad" def:1
                            kind:KIND_KEYBOARD] ],
-        @[ blank(), [self note:@"F1–F11 are K0–K10 (FujiNet CONFIG starts with K10 = F11: "
+        @[ blank(), [self note:@"F1–F12 are K0–K11 (FujiNet CONFIG starts with K10 = F11: "
                                @"if the Mac takes F11 to show the desktop, turn that off in "
                                @"System Settings ▸ Keyboard ▸ Keyboard Shortcuts, or press "
                                @"Fn+F11). Esc and Control are STOP, Tab is C-D, ` is WRK, "

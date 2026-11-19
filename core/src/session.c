@@ -305,6 +305,11 @@ uint64_t pmd85session_frame_count(pmd85session *s)
     return s->frame_count;
 }
 
+uint64_t pmd85session_frames_dropped(pmd85session *s)
+{
+    return s->frames_dropped;
+}
+
 int pmd85session_copy_frame(pmd85session *s, uint32_t *dst,
                             uint64_t *serial_inout, int *w_out, int *h_out)
 {
@@ -395,9 +400,12 @@ static void *emu_thread_main(void *arg)
         }
         if (now < next_us)
             pmd85_sleep_until_us(next_us);
-        else if (now - next_us > 100000L)
-            next_us = now;  /* a long stall (a debugger stop): don't race to
-                               catch up, resume real time from here */
+        else if (now - next_us > 100000L) {
+            /* a long stall (a debugger stop): don't race to catch up, resume
+             * real time from here */
+            s->frames_dropped += (uint64_t)((now - next_us) / frame_us);
+            next_us = now;
+        }
     }
 
     pmd85host_core_stop();

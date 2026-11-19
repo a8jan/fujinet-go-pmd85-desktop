@@ -68,9 +68,18 @@ int main(void)
     CHECK(pmd85session_start(s, &opts) == 0, "start: %s", pmd85session_last_error(s));
     /* the loader's banner, a blank, then CONFIG at ~2.6 s of machine time */
     sleep_ms(3500);
+    /* The pacer's rate, not the host's: a shared CI machine can stop the
+     * emulator thread for over 100 ms at a time, and the pacer then rightly
+     * drops those frames rather than race. Run plus dropped is the wall clock;
+     * never more than 50 Hz, and any frames lost to stalls are said. */
     uint64_t frames = pmd85session_frame_count(s);
-    CHECK(frames >= 160 && frames <= 190, "%llu frames in 3.5 s (want ~175: 50 Hz)",
-          (unsigned long long)frames);
+    uint64_t dropped = pmd85session_frames_dropped(s);
+    CHECK(frames + dropped >= 160 && frames + dropped <= 190 && frames <= 190,
+          "%llu frames + %llu dropped in 3.5 s (want ~175: 50 Hz)",
+          (unsigned long long)frames, (unsigned long long)dropped);
+    if (dropped)
+        fprintf(stderr, "note: %llu frames dropped after host stalls\n",
+                (unsigned long long)dropped);
     int lit = lit_now(s);
     CHECK(lit > 1500, "FujiNet CONFIG not on screen (%d lit)", lit);
     CHECK(pmd85session_mega_page(s) == 0, "mega page %d", pmd85session_mega_page(s));

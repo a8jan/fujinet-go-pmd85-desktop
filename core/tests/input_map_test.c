@@ -56,7 +56,7 @@ int main(void)
     expect("F1 (K0)", 0xFFBE, 0, 0x3A);
     expect("F10 (K9)", 0xFFC7, 0, 0x43);
     expect("F11 (K10, CONFIG's BOOT)", 0xFFC8, 0, 0x44);
-    expect("F12 (reserved: debugger)", 0xFFC9, 0, 0);
+    expect("F12 (K11)", 0xFFC9, 0, 0x45);
     expect("Shift_L", 0xFFE1, 0, 0xE1);
     expect("Control_L (STOP)", 0xFFE3, 0, 0xE0);
     expect("KP_0", 0xFFB0, 0, 0x62);

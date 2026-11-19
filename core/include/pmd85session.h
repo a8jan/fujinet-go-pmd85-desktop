@@ -196,6 +196,11 @@ typedef void (*pmd85session_frame_cb)(void *ctx);
 void pmd85session_set_frame_callback(pmd85session *s, pmd85session_frame_cb cb,
                                      void *ctx);
 uint64_t pmd85session_frame_count(pmd85session *s);
+/* Frames the pacer let go rather than race to catch up: after a stall of
+ * over 100 ms (a debugger stop, or a host that did not run the emulator
+ * thread) it resumes real time from there. frame_count + this is the time
+ * the machine has been running, in frames. */
+uint64_t pmd85session_frames_dropped(pmd85session *s);
 /* The display's vsync tick. The PMD runs at 50 Hz, which no desktop display
  * does, so the pacer never phase-locks to these; they are accepted so every
  * frontend can share the same display code as the family. */
@@ -209,8 +214,9 @@ int  pmd85session_frame_rate_mhz(const pmd85session *s);
 void pmd85session_key(pmd85session *s, int down, uint32_t keysym,
                       uint32_t unicode, int ctrl_down, int shift_down);
 /* The pure mapping behind it: keysym -> USB HID usage (what GPMD85Emulator's
- * keyboard tables are keyed by). 0 = not a PMD key, or reserved by the
- * frontends (F12, the debugger). Unit-tested on its own. */
+ * keyboard tables are keyed by). 0 = not a PMD key. F1..F12 are K0..K11; the
+ * frontends keep the debugger on Alt+F12 (Option+F12). Unit-tested on its
+ * own. */
 int  pmd85_key_from_event(uint32_t keysym, uint32_t unicode, int ctrl_down,
                           int shift_down, unsigned *usage_out);
 /* Let go of every key (the window lost focus). */
