@@ -23,6 +23,7 @@
 
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
+#import "DebuggerWindow.h"
 #import "DisplayView.h"
 #import "SettingsWindow.h"
 #import "TapeWindow.h"
@@ -788,6 +789,13 @@ static NSArray<UTType *> *typesForExtensions(NSArray<NSString *> *exts)
     [_settings show];
 }
 
+/* Option+F12 in the main window (DisplayExtras.inc) and View > Debugger. */
+- (void)toggleDebugger:(id)sender
+{
+    (void)sender;
+    [PmdDebuggerWindow toggleForSession:_session];
+}
+
 - (void)showAbout:(id)sender
 {
     (void)sender;
@@ -932,6 +940,10 @@ static NSArray<UTType *> *typesForExtensions(NSArray<NSString *> *exts)
     NSMenuItem *fs = [view addItemWithTitle:@"Enter Full Screen"
                                      action:@selector(toggleFullScreen:) keyEquivalent:@"f"];
     fs.keyEquivalentModifierMask = NSEventModifierFlagControl | NSEventModifierFlagCommand;
+    /* Cmd+D, and Option+F12 in the main window (as Alt+F12 on the other
+     * platforms): plain F12 is the PMD's K11 */
+    [view addItem:[NSMenuItem separatorItem]];
+    [view addItem:[self item:@"Debugger" action:@selector(toggleDebugger:) key:@"d"]];
 
     /* FujiNet */
     NSMenu *fuji = [self topMenu:@"FujiNet" in:bar];
@@ -1094,6 +1106,7 @@ static NSArray<UTType *> *typesForExtensions(NSArray<NSString *> *exts)
 
     /* developer affordances, as the GNOME app's */
     if (getenv("PMD85_OPEN_SETTINGS")) [self showSettings:nil];
+    if (getenv("PMD85_OPEN_DEBUGGER")) [self toggleDebugger:nil];
     if (getenv("PMD85_OPEN_TAPE")) [self tapeWindow:nil];
     if (getenv("PMD85_OPEN_LOG")) [self fujinetLog:nil];
 }
@@ -1102,6 +1115,8 @@ static NSArray<UTType *> *typesForExtensions(NSArray<NSString *> *exts)
 {
     (void)note;
     _quitting = YES;
+    /* the debugger lets the emulator thread go before the session stops it */
+    [PmdDebuggerWindow shutdown];
     /* close the windows while the session is alive: their handlers use it */
     _window.delegate = nil;
     for (NSWindow *w in [[NSApp windows] copy])

@@ -35,6 +35,12 @@
 
 - (void)keyDown:(NSEvent *)event
 {
+    /* Option+F12: the debugger (plain F12 is the PMD's K11) */
+    if (event.keyCode == 111 /* kVK_F12 */ && (event.modifierFlags & NSEventModifierFlagOption) &&
+        !event.isARepeat) {
+        [NSApp sendAction:@selector(toggleDebugger:) to:nil from:self];
+        return;
+    }
     PmdForwardKey(_session, event, 1);
 }
 

@@ -140,7 +140,7 @@ Next
 - Keyboard options apply by cold restart; make exchZY/numpad live.
 - (done) F12 is K11 on every platform; the debugger is on Alt+F12 (GNOME;
   KDE and Windows to follow), the macOS one will be Option+F12 in the main
-  window plus View > Debugger on Cmd+D (the Atari app's way).
+  window plus View > Debugger on Cmd+D (the Atari app's way): done.
 - macOS function keys: F11 (K10, which FujiNet CONFIG boots with) is
   often Mission Control's "Show Desktop", and F11/F12 are media keys
   unless Fn is held or "Use F1, F2, etc. keys as standard function keys"
@@ -152,7 +152,9 @@ Next
   602, the menu bar (Model, ROM Module, PMD 32 Disks, Tape, Colors,
   FujiNet), Settings, the Tape window, the console log. Built only on CI
   (no Apple toolchain here); tried by hand on macOS 14.6 (arm64), fine.
-  Next: the debugger window (Option+F12, Cmd+D), drag and drop of tapes/disks.
+  The debugger window (Option+F12 or View > Debugger, Cmd+D): the GNOME
+  one's ten tabs in the CoCo macOS window's shape; built only on CI so far.
+  Next: drag and drop of tapes/disks.
 - Then KDE and Windows.
 - CI: linux.yml (Arch container: GTK 4.16) and macos.yml (hosted macos-15,
   arm64; static SDL3 and OpenSSL, ad-hoc signed .app zip as an artifact).

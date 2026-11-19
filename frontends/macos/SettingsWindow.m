@@ -205,7 +205,7 @@ static NSView *blank(void)
                                @"Fn+F11). Esc and Control are STOP, Tab is C-D, ` is WRK, "
                                @"Page Up/Down are RCL/CLR. The app's keys are Command ones: "
                                @"Cmd+R RESET, Cmd+Shift+R cold restart, Cmd+Shift+C colors, "
-                               @"Cmd+T the tape, Cmd+P play/stop."] ],
+                               @"Cmd+T the tape, Cmd+P play/stop, Option+F12 or Cmd+D the debugger."] ],
     ]];
 }
 
