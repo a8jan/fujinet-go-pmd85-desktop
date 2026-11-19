@@ -1,4 +1,14 @@
 cmake_minimum_required(VERSION 3.20)
+
+# Must be set before project() to take effect. Left unset, Clang stamps every
+# binary with the build machine's SDK version as its minimum macOS, and an
+# older Mac refuses the app ("The app cannot run on the current OS version")
+# whatever Info.plist's LSMinimumSystemVersion says. 13.3 matches the siblings
+# and Info.plist.in; the FujiNet runtime build gets it too (FujiNetRuntime.cmake).
+if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin" AND NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET)
+  set(CMAKE_OSX_DEPLOYMENT_TARGET "13.3" CACHE STRING "Minimum macOS version")
+endif()
+
 # The version lives here and nowhere else: the About boxes, the macOS bundle
 # and the release workflow all take it from PROJECT_VERSION.
 project(fujinet-go-pmd85-desktop VERSION 0.1.0 LANGUAGES C CXX)

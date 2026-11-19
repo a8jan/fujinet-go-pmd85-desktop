@@ -53,15 +53,26 @@ if(WITH_FUJINET)
   # Re-run the runtime build when the recipe changes or the sources are
   # pointed somewhere else. configure_file() leaves the stamp alone when the
   # content is unchanged, so re-configuring does not rebuild FujiNet.
+  # On macOS the runtime is a separate CMake build: hand it the app's minimum
+  # macOS, or libfujinet.dylib is stamped with the build machine's SDK
+  # version. Clang and CMake both take MACOSX_DEPLOYMENT_TARGET from the
+  # environment. In the stamp too, so changing it rebuilds the runtime.
+  set(FUJINET_ENV "FUJINET_SRC=${FUJINET_DIR}")
+  set(FUJINET_STAMP_TEXT "${FUJINET_DIR}\n${FUJINET_COMMIT}\n")
+  if(APPLE AND CMAKE_OSX_DEPLOYMENT_TARGET)
+    list(APPEND FUJINET_ENV "MACOSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}")
+    string(APPEND FUJINET_STAMP_TEXT "macOS ${CMAKE_OSX_DEPLOYMENT_TARGET}\n")
+  endif()
+
   set(FUJINET_STAMP "${CMAKE_BINARY_DIR}/fujinet-source.stamp")
   file(WRITE "${CMAKE_BINARY_DIR}/CMakeFiles/fujinet-source.stamp.in"
-       "${FUJINET_DIR}\n${FUJINET_COMMIT}\n")
+       "${FUJINET_STAMP_TEXT}")
   configure_file("${CMAKE_BINARY_DIR}/CMakeFiles/fujinet-source.stamp.in"
                  "${FUJINET_STAMP}" COPYONLY)
 
   add_custom_command(
     OUTPUT "${FUJINET_LIB}"
-    COMMAND ${CMAKE_COMMAND} -E env "FUJINET_SRC=${FUJINET_DIR}"
+    COMMAND ${CMAKE_COMMAND} -E env ${FUJINET_ENV}
             "${BASH_EXECUTABLE}" "${FUJINET_SCRIPT}"
     DEPENDS "${FUJINET_SCRIPT}"
             "${CMAKE_SOURCE_DIR}/tools/fujinet/support/fujinet_desktop_entry.cpp"
@@ -74,7 +85,7 @@ if(WITH_FUJINET)
   # Escape hatch for working on the FujiNet sources themselves: always
   # re-stages and rebuilds, whatever the stamps say.
   add_custom_target(fujinet-runtime-refresh
-    COMMAND ${CMAKE_COMMAND} -E env "FUJINET_SRC=${FUJINET_DIR}" "FN_REFRESH=1"
+    COMMAND ${CMAKE_COMMAND} -E env ${FUJINET_ENV} "FN_REFRESH=1"
             "${BASH_EXECUTABLE}" "${FUJINET_SCRIPT}"
     COMMENT "Re-staging and rebuilding the FujiNet runtime"
     USES_TERMINAL

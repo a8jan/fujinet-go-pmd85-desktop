@@ -23,6 +23,12 @@ on:
 jobs:
   build-and-test:
     runs-on: macos-15
+    # The oldest macOS the app runs on (the top-level CMakeLists.txt sets the
+    # same for the app and the FujiNet runtime). Here for what CI builds by
+    # itself, the static SDL3: otherwise it is stamped with the runner's SDK
+    # version and the app refuses to open on an older Mac.
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "13.3"
     steps:
       - uses: actions/checkout@v4
 
@@ -89,6 +95,26 @@ jobs:
           fi
           test -f "$APP/Contents/Frameworks/libfujinet.dylib" \
             || { echo "::error::libfujinet.dylib missing from the bundle"; exit 1; }
+
+      # Every binary in the bundle must run on the minimum macOS: one built
+      # for the runner's SDK version makes LaunchServices refuse the app on
+      # an older Mac (kLSIncompatibleSystemVersionErr).
+      - name: Verify the minimum macOS of every binary
+        run: |
+          APP="build/frontends/macos/FujiNet Go PMD 85.app"
+          bad=0
+          while IFS= read -r -d '' f; do
+            file "$f" | grep -q "Mach-O" || continue
+            for minos in $(vtool -show-build "$f" | awk '$1 == "minos" { print $2 }'); do
+              echo "$minos  ${f#$APP/}"
+              if [ "$(printf '%s\n%s\n' "$minos" "$MACOSX_DEPLOYMENT_TARGET" \
+                      | sort -V | tail -n 1)" != "$MACOSX_DEPLOYMENT_TARGET" ]; then
+                echo "::error::${f#$APP/} needs macOS $minos (want $MACOSX_DEPLOYMENT_TARGET)"
+                bad=1
+              fi
+            done
+          done < <(find "$APP" -type f -print0)
+          exit $bad
 
       # ditto keeps the bundle's structure and executable bits, which a plain
       # upload of the .app directory does not.
