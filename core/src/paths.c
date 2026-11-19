@@ -186,9 +186,62 @@ static int copy_tree(const char *src, const char *dst)
     return rc;
 }
 
+/* Images this app shipped before under the same name: a file still exactly
+ * one of these was never touched by the user, so the current one replaces
+ * it. When a bundled image changes, add the old one here (its size and its
+ * 64-bit FNV-1a). */
+static const struct {
+    const char *name;
+    long size;
+    uint64_t fnv;
+} superseded_roms[] = {
+    /* fujinet-config-loader-pmd85 4d403ba, 2024 CONFIG */
+    { "fujinet-config-loader.rmm", 28644, 0x3d20101376f47b98ull },
+};
+
+static uint64_t fnv1a_file(const char *path, long *size)
+{
+    uint64_t h = 0xcbf29ce484222325ull;
+    long n = 0;
+    int ch;
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        *size = -1;
+        return 0;
+    }
+    while ((ch = fgetc(f)) != EOF) {
+        h = (h ^ (uint8_t)ch) * 0x100000001b3ull;
+        n++;
+    }
+    fclose(f);
+    *size = n;
+    return h;
+}
+
+/* Is the file at path an earlier bundled image of this name, untouched? */
+static int is_superseded(const char *name, const char *path)
+{
+    size_t i;
+    long size;
+    uint64_t h = 0;
+    int hashed = 0;
+    for (i = 0; i < sizeof superseded_roms / sizeof superseded_roms[0]; i++) {
+        if (strcmp(superseded_roms[i].name, name))
+            continue;
+        if (!hashed) {
+            h = fnv1a_file(path, &size);
+            hashed = 1;
+        }
+        if (size == superseded_roms[i].size && h == superseded_roms[i].fnv)
+            return 1;
+    }
+    return 0;
+}
+
 /* Write the compiled-in ROM images (the GPMD85Emulator set and the FujiNet
  * CONFIG loader) into the ROM directory, skipping any name that is already
- * there: a ROM the user replaced (or hand-copied) is never overwritten.
+ * there: a ROM the user replaced (or hand-copied) is never overwritten. One
+ * still exactly as an earlier version of this app wrote it is updated.
  *
  * Failures are silent by design -- a read-only or full data directory should
  * degrade to "no ROMs found, please import some", which the frontends already
@@ -202,7 +255,7 @@ void paths_materialise_roms(pmd85session *s)
         const pmd85_embedded_rom *r = &pmd85_embedded_roms[i];
         FILE *f;
         snprintf(dst, sizeof(dst), "%s/%s", s->roms_dir, r->name);
-        if (path_is_file(dst))
+        if (path_is_file(dst) && !is_superseded(r->name, dst))
             continue;
         f = fopen(dst, "wb");
         if (!f)
