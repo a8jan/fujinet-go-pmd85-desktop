@@ -1888,36 +1888,59 @@ int pmd85host_dbg_model(void)
     return m ? (int)m->model : -1;
 }
 
-const char *pmd85host_port_name(uint8_t port)
+/* The decode table: the conditions of Build(), in the order it adds the
+ * devices, which is the order the CPU's FindDevice walks them. */
+int pmd85host_port_devs(pmd85host_port_dev *out, int max)
 {
     static const char *const sys[4] = { "SYS PIO PA", "SYS PIO PB", "SYS PIO PC", "SYS PIO CWR" };
     static const char *const rom[4] = { "ROM PIO PA", "ROM PIO PB", "ROM PIO PC", "ROM PIO CWR" };
     static const char *const gpio[4] = { "GPIO PA", "GPIO PB", "GPIO PC", "GPIO CWR" };
     static const char *const pit[4] = { "PIT CT0", "PIT CT1", "PIT CT2", "PIT CWR" };
     static const char *const usart[2] = { "USART data", "USART cmd/status" };
+    static const char *const mm256[1] = { "MM256 page" };
+    static const char *const mif85[4] = { "MIF 85", "MIF 85", "MIF 85", "MIF 85" };
+    static const char *const mouse[1] = { "Mouse 602" };
+    static const char *const becker[2] = { "BECKER status", "BECKER data" };
+    static const char *const mega[1] = { "MEGA page" };
     PmdMachine *m = g_machine;
     TComputerModel model;
+    int n = 0;
 
-    if (!m) return nullptr;
+    if (!m || !out || max <= 0) return 0;
     model = m->model;
-    /* in the order Build() adds them, as the CPU's FindDevice walks them */
-    if ((port & SYSTEM_PIO_MASK) == SYSTEM_PIO_ADR) return sys[port & 3];
-    if (m->ifGpio && (port & IIF_GPIO_MASK) == IIF_GPIO_ADR) return gpio[port & 3];
-    if (m->ifTimer && (port & IIF_TIMER_MASK) == IIF_TIMER_ADR) return pit[port & 3];
+#define DEV(nm, mk, ad, rg, names) do { \
+        if (n < max) { \
+            out[n].name = nm; out[n].mask = (uint8_t)(mk); out[n].adr = (uint8_t)(ad); \
+            out[n].reg = (uint8_t)(rg); out[n].regs = names; n++; \
+        } } while (0)
+    /* the register bits: those the chip reads that its mask leaves free */
+    DEV("SYS PIO", SYSTEM_PIO_MASK, SYSTEM_PIO_ADR, 3, sys);
+    if (m->ifGpio) DEV("GPIO", IIF_GPIO_MASK, IIF_GPIO_ADR, 3, gpio);
+    if (m->ifTimer) DEV("PIT", IIF_TIMER_MASK, IIF_TIMER_ADR, 3, pit);
     if (model != CM_MATO) {
-        const bool alfa = model == CM_ALFA || model == CM_ALFA2;
-        if (alfa ? (port & IIF_TAPE_MASK_A) == IIF_TAPE_ADR_A
-                 : (port & IIF_TAPE_MASK) == IIF_TAPE_ADR)
-            return usart[(port & (alfa ? IIF_TAPE_REG_MASK_A : IIF_TAPE_REG_MASK)) & 1];
+        if (model == CM_ALFA || model == CM_ALFA2)
+            DEV("USART", IIF_TAPE_MASK_A, IIF_TAPE_ADR_A, IIF_TAPE_REG_MASK_A & ~IIF_TAPE_MASK_A & 0xFF,
+                usart);
+        else
+            DEV("USART", IIF_TAPE_MASK, IIF_TAPE_ADR, IIF_TAPE_REG_MASK & ~IIF_TAPE_MASK & 0xFF, usart);
     }
-    if ((model == CM_V2A || model == CM_V3) && m->cfg.ram256k && port == MM256_REG_ADR)
-        return "MM256 page";
-    if (m->mif85 && (port & MIF85_MASK) == MIF85_ADR) return "MIF 85";
-    if (m->mouse && (port & MOUSE_MASK) == MOUSE_ADR) return "Mouse 602";
-    if (m->becker && (port & PMD85_BECKER_MASK) == PMD85_BECKER_ADR)
-        return (port & 1) ? "BECKER data" : "BECKER status";
-    if (m->romModule && (port & ROM_MODULE_MASK) == ROM_MODULE_ADR) return rom[port & 3];
-    if (m->megaModule && port == MEGA_MODULE_ADR) return "MEGA page";
+    if ((model == CM_V2A || model == CM_V3) && m->cfg.ram256k) DEV("MM256", 0xFF, MM256_REG_ADR, 0, mm256);
+    if (m->mif85) DEV("MIF 85", MIF85_MASK, MIF85_ADR, MIF85_REG_MASK & ~MIF85_MASK & 0xFF, mif85);
+    if (m->mouse) DEV("Mouse 602", MOUSE_MASK, MOUSE_ADR, 0, mouse);
+    if (m->becker) DEV("BECKER", PMD85_BECKER_MASK, PMD85_BECKER_ADR, 1, becker);
+    if (m->romModule) DEV("ROM PIO", ROM_MODULE_MASK, ROM_MODULE_ADR, 3, rom);
+    if (m->megaModule) DEV("MEGA", 0xFF, MEGA_MODULE_ADR, 0, mega);
+#undef DEV
+    return n;
+}
+
+const char *pmd85host_port_name(uint8_t port)
+{
+    pmd85host_port_dev devs[PMD85HOST_PORT_DEVS_MAX];
+    const int n = pmd85host_port_devs(devs, PMD85HOST_PORT_DEVS_MAX);
+    for (int i = 0; i < n; i++)
+        if ((port & devs[i].mask) == devs[i].adr)
+            return devs[i].regs[port & devs[i].reg];
     return nullptr;
 }
 

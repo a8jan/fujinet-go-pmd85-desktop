@@ -66,6 +66,18 @@ int pmd85host_dbg_model(void);
  * ("SYS PIO PA", "BECKER data"...), or NULL when nothing does. */
 const char *pmd85host_port_name(uint8_t port);
 
+/* The machine's I/O decode as configured, in the order the CPU looks for a
+ * device (the first match answers). The PMD's chips decode only some address
+ * bits, so each register answers at several port numbers (mirrors). */
+typedef struct {
+    const char *name;           /* "SYS PIO", "BECKER" (static) */
+    uint8_t mask, adr;          /* it answers when (port & mask) == adr */
+    uint8_t reg;                /* the port bits that pick its register */
+    const char *const *regs;    /* the register names, by (port & reg) */
+} pmd85host_port_dev;
+#define PMD85HOST_PORT_DEVS_MAX 16
+int pmd85host_port_devs(pmd85host_port_dev *out, int max);
+
 /* The chips, into the debugger's public structure. */
 int pmd85host_dbg_io(pmd85debug_io *out);
 

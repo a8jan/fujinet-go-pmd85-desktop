@@ -55,7 +55,8 @@ static const char *help_text =
     "frame [n]              run n frames (20 ms each), stop at the next\n"
     "break <addr>[-<end>] [cond]       execute breakpoint\n"
     "bpr | bpw | bpa <addr>[-<end>] [cond]   read / write / access breakpoint\n"
-    "bpin | bpout | bpio <port>[-<end>] [cond]   IN / OUT / either on a port\n"
+    "bpin | bpout | bpio <port>[-<end>] [exact] [cond]   IN / OUT / either on a port:\n"
+    "                       its register at every mirror, or (exact) that number only\n"
     "delete <id> | enable <id> | disable <id> | clear | breaks | hits (clear hit counts)\n"
     "print <expr>           e.g. print hl, print [C000h], print {sp}, print pc+3\n"
     "regs                   registers and flags\n"
@@ -69,7 +70,7 @@ static const char *help_text =
     "find [hex] <bytes> | find text <string>   search memory (stopped)\n"
     "symbols [filter] | label <addr> <name> | labels <file>\n"
     "map                    the CPU memory map as mapped now\n"
-    "io | ports             the chips (PIOs, timer, USART, modules, Becker); the port map\n"
+    "io | ports             the chips (PIOs, timer, USART, modules, Becker); the I/O decode\n"
     "Expressions: C000h $C000 0xC000 #C000 49152 %1010; registers a b c d e h l f\n"
     "bc de hl sp pc psw; flags sf zf hf pf cf; [addr] byte, {addr} word; symbols;\n"
     "cycles frame tframe; in a condition value, old and addr (port); C operators.\n";
@@ -221,6 +222,14 @@ static void add_bp(pmd85debug *d, outbuf *buf, int type, char *args)
     }
     if (range(d, buf, tok, &first, &last))
         return;
+    if (type & PMD85DEBUG_BP_IO) {
+        /* "exact": those port numbers, not their mirrors */
+        char *peek = rest_of(args);
+        if (!strncasecmp(peek, "exact", 5) && (!peek[5] || isspace((unsigned char)peek[5]))) {
+            type |= PMD85DEBUG_BP_EXACT;
+            args = peek + 5;
+        }
+    }
     id = pmd85debug_breakpoint_add(d, type, (uint32_t)first, (uint32_t)last, rest_of(args));
     if (id < 0)
         out(buf, "error: not set (table full, bad range, or the condition does not parse)\n");
@@ -282,32 +291,13 @@ static void show_io(pmd85debug *d, outbuf *buf)
         out(buf, "%s%s\n", io.mif85 ? "MIF 85 fitted  " : "", io.pmd32 ? "PMD 32 fitted" : "");
 }
 
+/* The I/O decode: each device, where it answers and how many port numbers
+ * reach it (the PMD's chips decode only some address bits). */
 static void show_ports(pmd85debug *d, outbuf *buf)
 {
-    const char *last = NULL;
-    int port, first = -1;
-
-    if (!pmd85debug_is_paused(d)) {
-        out(buf, "the machine is running (stop first)\n");
-        return;
-    }
-    /* runs of ports answered by the same thing (the 8255s decode with masks,
-     * so each register shows up at several addresses) */
-    for (port = 0; port <= 256; port++) {
-        const char *name = port < 256 ? pmd85debug_port_name(d, (uint8_t)port) : NULL;
-        if (port < 256 && name == last && name)
-            continue;
-        if (last && first == port - 1)
-            out(buf, "  %-9s %s\n", pmd85hx(d, (unsigned)first, 2), last);
-        else if (last) {
-            char span[24];
-            snprintf(span, sizeof span, "%s-%s", pmd85hx(d, (unsigned)first, 2),
-                     pmd85hx(d, (unsigned)(port - 1), 2));
-            out(buf, "  %-9s %s\n", span, last);
-        }
-        last = name;
-        first = port;
-    }
+    char text[2048];
+    pmd85ports_describe(d, text, sizeof text);
+    out(buf, "I/O decode (the first match answers; the other ports are mirrors)\n%s", text);
 }
 
 int pmd85debug_command(pmd85debug *d, const char *command, char *dst, int dstsz)

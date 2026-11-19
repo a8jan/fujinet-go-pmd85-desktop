@@ -176,7 +176,13 @@ enum {
     PMD85DEBUG_BP_EXEC = 1, PMD85DEBUG_BP_READ = 2, PMD85DEBUG_BP_WRITE = 4,
     PMD85DEBUG_BP_ACCESS = 6,           /* READ | WRITE */
     PMD85DEBUG_BP_IN = 8, PMD85DEBUG_BP_OUT = 16,
-    PMD85DEBUG_BP_IO = 24               /* IN | OUT: start/end are ports */
+    PMD85DEBUG_BP_IO = 24,              /* IN | OUT: start/end are ports */
+    /* With IN/OUT: those port numbers only. Without it a port breakpoint is
+     * on the register the port reaches, at every mirror of it: the PMD's
+     * chips decode only some address bits, so the system PIO's port C is
+     * F6h, and 86h (as BASIC writes it), and every other port with the same
+     * decoded bits. */
+    PMD85DEBUG_BP_EXACT = 32
 };
 typedef struct {
     int      id;
@@ -264,8 +270,23 @@ int  pmd85debug_io_log_enabled(pmd85debug *d);
 int  pmd85debug_io_log(pmd85debug *d, pmd85debug_io_access *out, int max);
 void pmd85debug_io_log_clear(pmd85debug *d);
 /* "SYS PIO PC", "BECKER data", ... or NULL when nothing answers that port
- * on the machine as configured. Valid while paused. */
+ * on the machine as configured, as the engine last saw it (at an IN or OUT
+ * while engaged, or a stop). A mirror has its register's name. */
 const char *pmd85debug_port_name(pmd85debug *d, uint8_t port);
+
+/* The I/O decode, as last seen: each device, in the order the CPU looks for
+ * one (the first match answers). */
+typedef struct {
+    char    name[16];        /* "SYS PIO", "GPIO", "PIT", "USART", "BECKER" ... */
+    uint8_t mask, adr;       /* it answers when (port & mask) == adr */
+    uint8_t first, last;     /* its usual ports, the undecoded bits set: F4h-F7h */
+    int     registers;
+    int     ports;           /* the port numbers that reach it, mirrors included */
+} pmd85debug_port_device;
+int pmd85debug_port_devices(pmd85debug *d, pmd85debug_port_device *out, int max);
+/* Sets hit[p] for every port p that reaches the same register as port, port
+ * itself included (only it when nothing answers there). Returns how many. */
+int pmd85debug_port_mirrors(pmd85debug *d, uint8_t port, uint8_t hit[256]);
 
 /* ---- the chips: valid while paused (0 and zeroed while running) --------- */
 typedef struct {

@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 /* ---- range parsing ------------------------------------------------------------ */
 
@@ -316,9 +317,23 @@ int pmd85bp_describe(pmd85debug *d, const pmd85debug_breakpoint *bp, char *dst, 
         snprintf(kind, sizeof kind, "%s",
                  (bp->type & PMD85DEBUG_BP_IO) == PMD85DEBUG_BP_IO ? "In/Out"
                  : (bp->type & PMD85DEBUG_BP_IN) ? "In" : "Out");
-        if (d && bp->start == bp->end) {
-            const char *name = pmd85debug_port_name(d, (uint8_t)bp->start);
-            if (name) snprintf(label, sizeof label, "%s", name);
+        if (d) {
+            const char *name = bp->start == bp->end ? pmd85debug_port_name(d, (uint8_t)bp->start) : NULL;
+            /* the mirrors it covers too, when the range has any */
+            uint8_t hit[256];
+            int covered = 0;
+            uint32_t port;
+            memset(hit, 0, sizeof hit);
+            if (!(bp->type & PMD85DEBUG_BP_EXACT))
+                for (port = bp->start; port <= bp->end && port < 256; port++)
+                    pmd85debug_port_mirrors(d, (uint8_t)port, hit);
+            for (port = 0; port < 256; port++)
+                covered += hit[port];
+            snprintf(label, sizeof label, "%s%s%s", name ? name : "",
+                     name && ((bp->type & PMD85DEBUG_BP_EXACT) || covered > (int)(bp->end - bp->start + 1))
+                         ? ", " : "",
+                     (bp->type & PMD85DEBUG_BP_EXACT) ? "exact"
+                     : covered > (int)(bp->end - bp->start + 1) ? "and mirrors" : "");
         }
         if (bp->start == bp->end)
             written = snprintf(dst, (size_t)dstsz, "%s  port %s", kind, pmd85hx(d, bp->start, 2));
@@ -351,6 +366,103 @@ int pmd85bp_describe(pmd85debug *d, const pmd85debug_breakpoint *bp, char *dst, 
     if (written < dstsz && bp->condition[0])
         written += snprintf(dst + written, (size_t)(dstsz - written), "  if %s", bp->condition);
     return written < dstsz ? written : dstsz - 1;
+}
+
+/* ---- ports ------------------------------------------------------------------------ */
+
+/* A port number as the filter takes it: 3E, 3Eh, $3E, 0x3E, #3E. */
+static int port_number(const char *text, int len, int *out)
+{
+    char buf[16], *end;
+    long v;
+    if (len <= 0 || len >= (int)sizeof buf) return 0;
+    memcpy(buf, text, (size_t)len);
+    buf[len] = '\0';
+    text = buf;
+    if (*text == '$' || *text == '#') text++;
+    else if (text[0] == '0' && (text[1] == 'x' || text[1] == 'X')) text += 2;
+    if ((buf[len - 1] == 'h' || buf[len - 1] == 'H') && buf + len - 1 > text) buf[len - 1] = '\0';
+    if (!*text) return 0;
+    v = strtol(text, &end, 16);
+    if (*end || v < 0 || v > 255) return 0;
+    *out = (int)v;
+    return 1;
+}
+
+int pmd85portfilter_parse(pmd85debug *d, const char *text, pmd85portfilter *f)
+{
+    char buf[64];
+    const char *dash;
+    int lo, hi, exact = 0, port, any = 0;
+    size_t len;
+
+    if (!f) return 0;
+    memset(f->hit, 0, sizeof f->hit);
+    while (text && isspace((unsigned char)*text)) text++;
+    snprintf(buf, sizeof buf, "%s", text ? text : "");
+    len = strlen(buf);
+    while (len && isspace((unsigned char)buf[len - 1])) buf[--len] = '\0';
+    if (!len) {
+        memset(f->hit, 1, sizeof f->hit);
+        return 1;
+    }
+    text = buf;
+    if (*text == '=') {
+        exact = 1;
+        text++;
+        while (isspace((unsigned char)*text)) text++;
+    }
+    dash = strchr(text + 1, '-');
+    if (dash ? port_number(text, (int)(dash - text), &lo) && port_number(dash + 1, (int)strlen(dash + 1), &hi)
+             : port_number(text, (int)strlen(text), &lo)) {
+        if (!dash) hi = lo;
+        if (hi < lo) { port = lo; lo = hi; hi = port; }
+        for (port = lo; port <= hi; port++) {
+            if (exact || !d) f->hit[port] = 1;
+            else pmd85debug_port_mirrors(d, (uint8_t)port, f->hit);
+        }
+        return 1;
+    }
+    if (exact || !d) return 0;
+    /* the start of a name: "sys pio" is every system PIO register */
+    for (port = 0; port < 256; port++) {
+        const char *name = pmd85debug_port_name(d, (uint8_t)port);
+        if (name && !strncasecmp(name, text, strlen(text))) {
+            f->hit[port] = 1;
+            any = 1;
+        }
+    }
+    return any;
+}
+
+int pmd85ports_describe(pmd85debug *d, char *dst, int dstsz)
+{
+    pmd85debug_port_device devs[16];
+    int n, i, len = 0;
+
+    if (!dst || dstsz <= 0) return 0;
+    dst[0] = '\0';
+    n = pmd85debug_port_devices(d, devs, 16);
+    if (n <= 0)
+        return snprintf(dst, (size_t)dstsz, "(not seen yet: stop the machine once)\n") < dstsz ? (int)strlen(dst)
+                                                                                         : dstsz - 1;
+    for (i = 0; i < n && len < dstsz - 1; i++) {
+        char span[24], rule[48];
+        const int each = devs[i].registers ? devs[i].ports / devs[i].registers : 0;
+        if (devs[i].first == devs[i].last)
+            snprintf(span, sizeof span, "%s", pmd85hx(d, devs[i].first, 2));
+        else
+            snprintf(span, sizeof span, "%s-%s", pmd85hx(d, devs[i].first, 2), pmd85hx(d, devs[i].last, 2));
+        snprintf(rule, sizeof rule, "port & %s = %s", pmd85hx(d, devs[i].mask, 2), pmd85hx(d, devs[i].adr, 2));
+        len += snprintf(dst + len, (size_t)(dstsz - len), "  %-10s %-10s %-20s %d register%s", devs[i].name,
+                        span, rule, devs[i].registers, devs[i].registers == 1 ? "" : "s");
+        if (len < dstsz - 1 && each > 1)
+            len += snprintf(dst + len, (size_t)(dstsz - len), ", %s at %d ports",
+                            devs[i].registers == 1 ? "answering" : "each", each);
+        if (len < dstsz - 1)
+            len += snprintf(dst + len, (size_t)(dstsz - len), "\n");
+    }
+    return len < dstsz ? len : dstsz - 1;
 }
 
 /* ---- memory map labels ---------------------------------------------------------- */

@@ -64,6 +64,19 @@ int pmd85search_parse(int kind, const char *text, uint8_t *pat, int *n,
 int pmd85bp_describe(pmd85debug *d, const pmd85debug_breakpoint *bp, char *dst,
                     int dstsz);
 
+/* ---- ports ---- */
+/* A port filter (the I/O log's): "" every port; a port or lo-hi ("3E",
+ * "84-87") and every mirror of them; "=86" that port number only; or the
+ * start of a name ("SYS PIO", "becker", "PIT CT0"). 1, or 0 when the text
+ * is none of these. */
+typedef struct {
+    uint8_t hit[256];
+} pmd85portfilter;
+int pmd85portfilter_parse(pmd85debug *d, const char *text, pmd85portfilter *f);
+/* The decode table as text, a line per device: "SYS PIO   F4h-F7h
+ * port & 8Ch = 84h   4 registers, each at 8 ports". */
+int pmd85ports_describe(pmd85debug *d, char *dst, int dstsz);
+
 /* ---- memory map ---- */
 /* The name of the region of `map` (from pmd85debug_memory_map) holding addr
  * ("RAM", "ROM", "VRAM"), for labelling Memory rows. Fetch the map once

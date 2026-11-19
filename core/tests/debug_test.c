@@ -20,6 +20,7 @@
 #include <time.h>
 
 #include "pmd85debug.h"
+#include "pmd85memtools.h"
 #include "pmd85session.h"
 #include "test_util.h"
 
@@ -244,6 +245,55 @@ int main(void)
     ok("a port past #FF is refused",
        pmd85debug_breakpoint_add(d, PMD85DEBUG_BP_OUT, 0x20, 0x100, NULL) < 0);
 
+    /* ---- mirrors: the system PIO decodes A7, A3, A2, so its port B is F5h
+     * and 85h (and six more) ---- */
+    {
+        static const uint8_t in85[] = { 0xDB, 0x85, 0x00, 0x00 };   /* IN 85h; NOP; NOP */
+        pmd85debug_breakpoint bp[2];
+        char desc[200];
+        pmd85debug_mem_write(d, PMD85DEBUG_SPACE_CPU, 0x0120, in85, (int)sizeof in85);
+        pmd85debug_regs_set(d, PMD85DEBUG_REG_PC, 0x0120);
+        id = pmd85debug_breakpoint_add(d, PMD85DEBUG_BP_IN, 0xF5, 0xF5, NULL);
+        ok("bpin F5h stops on IN 85h, a mirror", go(d) && pc_of(d) == 0x0122);
+        reason(d, text, sizeof text);
+        ok("  'IN 85h (SYS PIO PB) = ..'", !strncmp(text, "IN 85h (SYS PIO PB) = ", 22));
+        pmd85debug_breakpoints_list(d, bp, 2);
+        pmd85bp_describe(d, &bp[0], desc, sizeof desc);
+        ok("  described with its mirrors", strstr(desc, "port F5h (SYS PIO PB, and mirrors)") != NULL);
+        pmd85debug_breakpoint_remove(d, id);
+        pmd85debug_regs_set(d, PMD85DEBUG_REG_PC, 0x0120);
+        id = pmd85debug_breakpoint_add(d, PMD85DEBUG_BP_IN | PMD85DEBUG_BP_EXACT, 0xF5, 0xF5, NULL);
+        pmd85debug_breakpoints_list(d, bp, 2);
+        pmd85bp_describe(d, &bp[0], desc, sizeof desc);
+        ok("  an exact one is described so", strstr(desc, "(SYS PIO PB, exact)") != NULL);
+        was = pmd85debug_stop_serial(d);
+        pmd85debug_run_to(d, 0x0123);
+        ok("an exact bpin F5h lets IN 85h by", wait_stop(d, was) && pc_of(d) == 0x0123);
+        pmd85debug_breakpoint_remove(d, id);
+        ok("an exact memory breakpoint is refused",
+           pmd85debug_breakpoint_add(d, PMD85DEBUG_BP_READ | PMD85DEBUG_BP_EXACT, 0, 0, NULL) < 0);
+        ok("port 86h is named as its register", pmd85debug_port_name(d, 0x86) &&
+                                                !strcmp(pmd85debug_port_name(d, 0x86), "SYS PIO PC"));
+        pmd85debug_regs_set(d, PMD85DEBUG_REG_PC, 0x010A);   /* back at the CALL, for what follows */
+    }
+    {
+        pmd85portfilter f;
+        char t[2048];
+        ok("filter F4-F7 takes the mirrors", pmd85portfilter_parse(d, "F4-F7", &f) && f.hit[0x86] &&
+                                             f.hit[0xF6] && f.hit[0xA4] && !f.hit[0x88]);
+        ok("filter =86 is that port only", pmd85portfilter_parse(d, "=86", &f) && f.hit[0x86] && !f.hit[0xF6]);
+        ok("filter by name", pmd85portfilter_parse(d, "sys pio", &f) && f.hit[0x84] && f.hit[0xF7] &&
+                             !f.hit[0x4C]);
+        ok("filter: nothing by that name", !pmd85portfilter_parse(d, "zzz", &f));
+        ok("filter: empty is every port", pmd85portfilter_parse(d, "", &f) && f.hit[0] && f.hit[255]);
+        pmd85ports_describe(d, t, sizeof t);
+        ok("decode: the system PIO at F4h-F7h, each register at 8 ports",
+           strstr(t, "SYS PIO") && strstr(t, "F4h-F7h") && strstr(t, "port & 8Ch = 84h") &&
+           strstr(t, "4 registers, each at 8 ports"));
+        if (!strstr(t, "each at 8 ports"))
+            printf("%s", t);
+    }
+
     /* ---- step over / into / out ---- */
     was = pmd85debug_stop_serial(d);
     pmd85debug_step_over(d);
@@ -332,7 +382,10 @@ int main(void)
     ok("prompt: breaks", strstr(cmd(d, "breaks"), "In/Out  ports 84h-87h") != NULL);
     cmd(d, "clear");
     ok("prompt: io", strstr(cmd(d, "io"), "SYS PIO") != NULL);
-    ok("prompt: ports", strstr(cmd(d, "ports"), "SYS PIO PA") != NULL);
+    ok("prompt: ports", strstr(cmd(d, "ports"), "F4h-F7h") != NULL);
+    ok("prompt: bpout exact", strstr(cmd(d, "bpout F6h exact"), "breakpoint #") != NULL &&
+                              strstr(cmd(d, "breaks"), "port F6h (SYS PIO PC, exact)") != NULL);
+    cmd(d, "clear");
     ok("prompt: print", strstr(cmd(d, "print hl"), "0200h") != NULL);
     ok("prompt: iolog", strstr(cmd(d, "iolog"), "OUT 20h = 41h") != NULL);
     cmd(d, "label #0110 sub");

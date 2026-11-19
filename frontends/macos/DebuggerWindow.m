@@ -229,6 +229,7 @@ static void setButtonAccent(NSButton *button, BOOL active)
 
     /* Breakpoints */
     NSPopUpButton *_bpType;
+    NSButton *_bpExact;         /* a port breakpoint on those numbers only */
     NSTextField *_bpStart, *_bpEnd, *_bpCond, *_bpErr, *_bpStop;
     NSStackView *_bpList;
     NSString *_bpSig;
@@ -1082,12 +1083,17 @@ static NSString *stopLine(const pmd85debug_stop *stop, NSString *running)
     NSScrollView *bpScroll = rowsScroll(_bpList);
 
     _bpType = [self popup:@[@"Execute", @"Read", @"Write", @"Access", @"IN port", @"OUT port", @"IN/OUT port"]
-                   action:nil];
+                   action:@selector(bpTypeChanged:)];
+    _bpExact = [NSButton checkboxWithTitle:@"Exact" target:nil action:nil];
+    _bpExact.toolTip = @"A port breakpoint on these port numbers only. Without it, it is on the register they "
+                       @"reach, at every mirror (the PMD's chips decode only some address bits: the system "
+                       @"PIO's port C is F6h, and 86h as BASIC writes it).";
+    _bpExact.enabled = NO;
     _bpStart = [self field:@"C000h / symbol / port" width:200 action:@selector(addBreakpoint:)];
     _bpEnd = [self field:@"(end)" width:90 action:@selector(addBreakpoint:)];
     _bpCond = [self field:@"condition, e.g. a == FFh && value != old — optional" width:0
                    action:@selector(addBreakpoint:)];
-    NSStackView *row = hstack(@[_bpType, [self label:@"Start"], _bpStart, [self label:@"End"], _bpEnd,
+    NSStackView *row = hstack(@[_bpType, _bpExact, [self label:@"Start"], _bpStart, [self label:@"End"], _bpEnd,
                                 [self label:@"If"], _bpCond, [self button:@"Add" action:@selector(addBreakpoint:)],
                                 [self button:@"Clear Hits" action:@selector(clearHits:)],
                                 [self button:@"Clear All" action:@selector(clearBreaks:)]]);
@@ -1096,7 +1102,9 @@ static NSString *stopLine(const pmd85debug_stop *stop, NSString *running)
     _bpErr.textColor = NSColor.systemRedColor;
     NSTextField *hint = [self hint:@"Untick to disable. A condition is a C expression: registers, flags, [addr], "
                                    @"symbols; on a Read/Write/Access break value, addr and old work too, on a port "
-                                   @"break value and port. The end defaults to the start."];
+                                   @"break value and port. The end defaults to the start. A port breakpoint "
+                                   @"stops at every mirror of its port (the I/O tab lists them) unless it is "
+                                   @"Exact."];
 
     NSStackView *page = vstack(@[_bpStop, bpScroll, hint, row, _bpErr]);
     fill(page, bpScroll);
@@ -1131,7 +1139,9 @@ static NSString *stopLine(const pmd85debug_stop *stop, NSString *running)
     _ioLog = monoView(&logScroll, NO);
     _ioOn = [NSButton checkboxWithTitle:@"Log" target:self action:@selector(ioOn:)];
     _ioOn.toolTip = @"Record every IN and OUT while the debugger is open";
-    _ioFilter = [self field:@"port or lo-hi, e.g. 3E-3F" width:150 action:@selector(ioFilterChanged:)];
+    _ioFilter = [self field:@"F4-F7, =86, SYS PIO" width:170 action:@selector(ioFilterChanged:)];
+    _ioFilter.toolTip = @"A port or a range takes its mirrors too (the system PIO is F4-F7 and 84-87, A4-A7...); "
+                        @"=86 is that number only; a name takes every port of that chip or register";
     _ioFilter.delegate = self;
     _ioNote = [self hint:@""];
     NSStackView *row = hstack(@[_ioOn, [self label:@"Ports"], _ioFilter,
@@ -1858,7 +1868,9 @@ static NSString *stopLine(const pmd85debug_stop *stop, NSString *running)
         PMD85DEBUG_BP_IN, PMD85DEBUG_BP_OUT, PMD85DEBUG_BP_IO
     };
     const NSInteger sel = _bpType.indexOfSelectedItem;
-    const int type = types[sel >= 0 && sel < 7 ? sel : 0];
+    int type = types[sel >= 0 && sel < 7 ? sel : 0];
+    if ((type & PMD85DEBUG_BP_IO) && _bpExact.state == NSControlStateValueOn)
+        type |= PMD85DEBUG_BP_EXACT;
     NSString *why = nil;
     long start, end;
     if (![self evaluate:_bpStart.stringValue into:&start why:&why]) {
@@ -1892,6 +1904,13 @@ static NSString *stopLine(const pmd85debug_stop *stop, NSString *running)
     _bpEnd.stringValue = @"";
     _bpCond.stringValue = @"";
     [self refreshNow];
+}
+
+/* Exact applies to the port types only. */
+- (void)bpTypeChanged:(id)sender
+{
+    (void)sender;
+    _bpExact.enabled = _bpType.indexOfSelectedItem >= 4;
 }
 
 - (void)bpEnabled:(NSButton *)sender
@@ -2534,6 +2553,11 @@ static void appendPio(NSMutableString *text, const char *name, const pmd85debug_
                            chips.becker_link ? "up" : "down", chips.becker_rx, chips.becker_rx == 1 ? "" : "s"];
     else
         [text appendString:@"\nBecker port: not fitted (FujiNet is off)\n"];
+    /* the chips decode only some address bits: each register has mirrors */
+    char decode[2048];
+    decode[0] = '\0';
+    pmd85ports_describe(_dbg, decode, (int)sizeof decode);
+    [text appendFormat:@"\nI/O decode (the first match answers; the other ports are mirrors)\n%@", cstr(decode)];
     setText(_ioText, text, NO);
 }
 
@@ -2545,31 +2569,26 @@ static void appendPio(NSMutableString *text, const char *name, const pmd85debug_
     const NSInteger want = pmd85debug_io_log_enabled(_dbg) ? NSControlStateValueOn : NSControlStateValueOff;
     if (_ioOn.state != want)
         _ioOn.state = want;
-    long low = 0, high = 255;
-    NSString *filter = trimmed(_ioFilter.stringValue);
-    if (filter.length) {
-        const NSRange dash = [filter rangeOfString:@"-" options:0 range:NSMakeRange(1, filter.length - 1)];
-        NSString *lowText = dash.location == NSNotFound ? filter : [filter substringToIndex:dash.location];
-        if (!parseNum(lowText, &low) ||
-            (dash.location != NSNotFound && !parseNum([filter substringFromIndex:dash.location + 1], &high)) ||
-            low < 0 || low > 255 || high < 0 || high > 255) {
-            _ioNote.stringValue = @"Filter: a port (3E) or a range (84-87)";
-            return;
-        }
-        if (dash.location == NSNotFound)
-            high = low;
+    /* a port or lo-hi (and their mirrors), =port (that number only), or a name */
+    static pmd85portfilter filter;
+    if (!pmd85portfilter_parse(_dbg, _ioFilter.stringValue.UTF8String, &filter)) {
+        _ioNote.stringValue = @"Filter: a port (3E), a range (F4-F7), =86 for that number only, or a name (SYS PIO)";
+        return;
     }
     int count = pmd85debug_io_log(_dbg, log, IOLOG_READ);
     if (count < 0)
         count = 0;
-    const uint64_t sig = ((uint64_t)count << 48) ^ (count ? log[0].tstates : 0) ^ (uint64_t)(low << 8 | high);
+    uint64_t sig = 1469598103934665603ull;
+    for (int port = 0; port < 256; port++)
+        sig = (sig ^ filter.hit[port]) * 1099511628211ull;
+    sig ^= ((uint64_t)count << 48) ^ (count ? log[0].tstates : 0);
     if (!force && sig == _ioSig)
         return;
     _ioSig = sig;
     NSMutableString *text = [NSMutableString string];
     int shown = 0;
     for (int index = count - 1; index >= 0; index--) {
-        if (log[index].port < low || log[index].port > high)
+        if (!filter.hit[log[index].port])
             continue;
         const char *name = pmd85debug_port_name(_dbg, log[index].port);
         NSString *port = [[self hex:log[index].port digits:2] stringByPaddingToLength:5 withString:@" "

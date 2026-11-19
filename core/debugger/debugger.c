@@ -67,7 +67,16 @@ struct pmd85debug {
     int nbp, next_id;
     uint8_t map_exec[SPACE_SIZE];   /* nonzero: an enabled exec bp covers it */
     uint8_t map_mem[SPACE_SIZE];    /* PMD85DEBUG_BP_READ / _WRITE bits */
-    uint8_t map_io[256];            /* PMD85DEBUG_BP_IN / _OUT bits */
+    uint8_t map_io[256];            /* PMD85DEBUG_BP_IN / _OUT bits, mirrors included */
+
+    /* The I/O decode as last seen (at an IN/OUT, or a stop): which register
+     * of which device each port number reaches. The PMD's chips decode only
+     * some address bits, so a register answers at several ports (mirrors),
+     * and a port breakpoint is on the register unless it is exact. */
+    pmd85host_port_dev io_devs[PMD85HOST_PORT_DEVS_MAX];
+    int n_io_devs;                  /* -1: not seen yet */
+    int16_t io_key[256];            /* device * 256 + register bits, -1 none */
+    const char *io_name[256];       /* the register's name (static), NULL none */
     atomic_int n_mem;               /* enabled memory read/write breakpoints */
     atomic_int n_io;                /* enabled port breakpoints */
 
@@ -303,6 +312,21 @@ static int cond_true(pmd85debug *d, const pmd85debug_breakpoint *bp)
     return v != 0;
 }
 
+/* Whether a port is one a port breakpoint is on: in its range, or (unless
+ * it is exact) reaching the same register as a port in its range. */
+static int bp_port_hit(const pmd85debug *d, const pmd85debug_breakpoint *bp, unsigned port)
+{
+    uint32_t q;
+    if (port >= bp->start && port <= bp->end)
+        return 1;
+    if ((bp->type & PMD85DEBUG_BP_EXACT) || d->io_key[port] < 0)
+        return 0;
+    for (q = bp->start; q <= bp->end && q < 256; q++)
+        if (d->io_key[q] == d->io_key[port])
+            return 1;
+    return 0;
+}
+
 /* Rebuild what the hook reads from the table. Caller holds mtx. */
 static void rebuild_locked(pmd85debug *d)
 {
@@ -318,8 +342,9 @@ static void rebuild_locked(pmd85debug *d)
             continue;
         if (bp->type & PMD85DEBUG_BP_IO) {
             nio++;
-            for (addr = bp->start; addr <= bp->end && addr < 256; addr++)
-                d->map_io[addr] |= (uint8_t)(bp->type & PMD85DEBUG_BP_IO);
+            for (addr = 0; addr < 256; addr++)
+                if (bp_port_hit(d, bp, addr))
+                    d->map_io[addr] |= (uint8_t)(bp->type & PMD85DEBUG_BP_IO);
             continue;
         }
         if (bp->type & PMD85DEBUG_BP_ACCESS)
@@ -332,6 +357,38 @@ static void rebuild_locked(pmd85debug *d)
     }
     atomic_store(&d->n_mem, nmem);
     atomic_store(&d->n_io, nio);
+}
+
+/* Reads the machine's I/O decode; 1 when it changed (the port breakpoints'
+ * map is then out of date). Caller holds mtx, on the emulator thread or with
+ * the machine parked. */
+static int io_decode_refresh_locked(pmd85debug *d)
+{
+    pmd85host_port_dev devs[PMD85HOST_PORT_DEVS_MAX];
+    const int n = pmd85host_port_devs(devs, PMD85HOST_PORT_DEVS_MAX);
+    int i, same = n == d->n_io_devs;
+    unsigned port;
+
+    for (i = 0; same && i < n; i++)
+        same = devs[i].name == d->io_devs[i].name && devs[i].mask == d->io_devs[i].mask &&
+               devs[i].adr == d->io_devs[i].adr && devs[i].reg == d->io_devs[i].reg &&
+               devs[i].regs == d->io_devs[i].regs;
+    if (same)
+        return 0;
+    for (i = 0; i < n; i++)
+        d->io_devs[i] = devs[i];
+    d->n_io_devs = n;
+    for (port = 0; port < 256; port++) {
+        d->io_key[port] = -1;
+        d->io_name[port] = NULL;
+        for (i = 0; i < n; i++)
+            if ((port & devs[i].mask) == devs[i].adr) {
+                d->io_key[port] = (int16_t)(i * 256 + (port & devs[i].reg));
+                d->io_name[port] = devs[i].regs[port & devs[i].reg];
+                break;
+            }
+    }
+    return 1;
 }
 
 /* ---- the access decoder --------------------------------------------------
@@ -586,6 +643,8 @@ static void park_locked(pmd85debug *d, const pmd85host_cpu *c, const char *reaso
         select_monitor_symbols(d);
         d->monsym_machine = d->machine_seen;
     }
+    if (io_decode_refresh_locked(d))
+        rebuild_locked(d);
     regs_from_cpu(c, &d->regs);
     d->regs_valid = 1;
     snprintf(d->reason, sizeof(d->reason), "%s", reason);
@@ -619,6 +678,8 @@ static int check_pending_locked(pmd85debug *d, const pmd85host_cpu *c, char *tex
 {
     int i, pos, hit = 0;
 
+    if (d->pend_io && io_decode_refresh_locked(d))
+        rebuild_locked(d);      /* the machine was reconfigured: new mirrors */
     if (d->pend_io) {
         const int out = d->pend_io == 2;
         const uint8_t value = out ? d->pend_out_value : (uint8_t)(c->af >> 8);
@@ -633,8 +694,8 @@ static int check_pending_locked(pmd85debug *d, const pmd85host_cpu *c, char *tex
             d->in_access = 1;
             for (pos = 0; pos < d->nbp && !hit; pos++) {
                 pmd85debug_breakpoint *bp = &d->bp[pos];
-                if (bp->enabled && (bp->type & bit) && d->pend_port >= bp->start &&
-                    d->pend_port <= bp->end && cond_true(d, bp)) {
+                if (bp->enabled && (bp->type & bit) && bp_port_hit(d, bp, d->pend_port) &&
+                    cond_true(d, bp)) {
                     const char *name = pmd85host_port_name(d->pend_port);
                     bp->hits++;
                     hit = 1;
@@ -821,6 +882,8 @@ pmd85debug *pmd85debug_create(pmd85session *s)
     pthread_mutex_init(&d->trace_mtx, NULL);
     d->transient_bp = -1;
     d->next_id = 1;
+    d->n_io_devs = -1;
+    memset(d->io_key, 0xFF, sizeof d->io_key);      /* -1: nothing answers */
     atomic_store(&d->io_log_on, 1);
     {
         /* the display choices persist with the session's settings */
@@ -1531,9 +1594,10 @@ int pmd85debug_breakpoint_add(pmd85debug *d, int type, uint32_t start, uint32_t 
     char err[96];
     const int io = type & PMD85DEBUG_BP_IO;
     const int mem = type & (PMD85DEBUG_BP_EXEC | PMD85DEBUG_BP_ACCESS);
+    const int exact = type & PMD85DEBUG_BP_EXACT;
     int id;
 
-    if (!d || (!io && !mem) || (io && mem))
+    if (!d || (!io && !mem) || (io && mem) || (exact && !io))
         return -1;
     if (condition && *condition && expr_eval(condition, NULL, NULL, err, sizeof(err)) != 0)
         return -1;
@@ -1552,7 +1616,7 @@ int pmd85debug_breakpoint_add(pmd85debug *d, int type, uint32_t start, uint32_t 
     bp = &d->bp[d->nbp++];
     memset(bp, 0, sizeof(*bp));
     bp->id = id = d->next_id++;
-    bp->type = io ? io : mem;
+    bp->type = io ? io | exact : mem;
     bp->start = start;
     bp->end = end;
     bp->enabled = 1;
@@ -1922,11 +1986,63 @@ void pmd85debug_io_log_clear(pmd85debug *d)
     bump(d);
 }
 
+/* From the decode the engine last saw (at an IN/OUT, or a stop), so it
+ * answers while the machine runs too. */
 const char *pmd85debug_port_name(pmd85debug *d, uint8_t port)
 {
-    if (!d || !parked(d))
+    const char *name;
+    if (!d)
         return NULL;
-    return pmd85host_port_name(port);
+    pthread_mutex_lock(&d->mtx);
+    name = d->io_name[port];
+    pthread_mutex_unlock(&d->mtx);
+    return name;
+}
+
+int pmd85debug_port_devices(pmd85debug *d, pmd85debug_port_device *out, int max)
+{
+    int i, n = 0;
+    unsigned port;
+    if (!d || !out || max <= 0)
+        return 0;
+    pthread_mutex_lock(&d->mtx);
+    for (i = 0; i < d->n_io_devs && n < max; i++, n++) {
+        const pmd85host_port_dev *dev = &d->io_devs[i];
+        pmd85debug_port_device *o = &out[n];
+        memset(o, 0, sizeof *o);
+        snprintf(o->name, sizeof o->name, "%s", dev->name);
+        o->mask = dev->mask;
+        o->adr = dev->adr;
+        /* as the PMD's own documentation lists them: the bits nothing
+         * decodes set (the system PIO is F4h-F7h, BASIC writes 86h) */
+        o->first = (uint8_t)(dev->adr | (~dev->mask & ~dev->reg & 0xFF));
+        o->last = (uint8_t)(o->first | dev->reg);
+        o->registers = 1;
+        for (port = 0; port < 256; port++)
+            if ((port & dev->reg) == port && port)
+                o->registers++;
+        for (port = 0; port < 256; port++)
+            if (d->io_key[port] >= 0 && d->io_key[port] / 256 == i)
+                o->ports++;
+    }
+    pthread_mutex_unlock(&d->mtx);
+    return n;
+}
+
+int pmd85debug_port_mirrors(pmd85debug *d, uint8_t port, uint8_t hit[256])
+{
+    int n = 0;
+    unsigned other;
+    if (!d || !hit)
+        return 0;
+    pthread_mutex_lock(&d->mtx);
+    for (other = 0; other < 256; other++)
+        if (other == port || (d->io_key[port] >= 0 && d->io_key[other] == d->io_key[port])) {
+            hit[other] = 1;
+            n++;
+        }
+    pthread_mutex_unlock(&d->mtx);
+    return n;
 }
 
 int pmd85debug_io_get(pmd85debug *d, pmd85debug_io *out)

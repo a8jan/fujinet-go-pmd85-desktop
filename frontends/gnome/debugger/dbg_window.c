@@ -132,6 +132,7 @@ typedef struct {
     GtkListBox *bp_list;
     GtkDropDown *bp_type;
     GtkCheckButton *bp_phys;
+    GtkCheckButton *bp_exact;     /* a port breakpoint on those numbers only */
     GtkEntry *bp_start, *bp_end, *bp_cond;
     GtkEntry *break_at;       /* the toolbar's "Break at" box */
     GtkLabel *bp_msg;
@@ -775,6 +776,12 @@ static void refresh_io(DbgWin *state)
                                chips.becker_rx == 1 ? "" : "s");
     else
         g_string_append(text, "\nBecker port: not fitted (FujiNet is off)\n");
+    {   /* the chips decode only some address bits: each register has mirrors */
+        char decode[2048];
+        pmd85ports_describe(state->dbg, decode, sizeof decode);
+        g_string_append_printf(text, "\nI/O decode (the first match answers; the other ports are "
+                                     "mirrors)\n%s", decode);
+    }
     set_text(state->io_text, text->str);
     g_string_free(text, TRUE);
 }
@@ -784,37 +791,33 @@ static void refresh_io(DbgWin *state)
 static void refresh_iolog(DbgWin *state, gboolean force)
 {
     static pmd85debug_io_access log[IOLOG_READ];
+    static pmd85portfilter filter;
     const char *ftext = gtk_editable_get_text(GTK_EDITABLE(state->io_filter));
-    long lo = 0, hi = 255;
     int count, index, shown = 0;
-    uint64_t sig;
+    uint64_t sig = 1469598103934665603ull;
     GString *text;
     char note[160];
 
     state->io_sync = TRUE;
     gtk_check_button_set_active(state->io_on, pmd85debug_io_log_enabled(state->dbg) != 0);
     state->io_sync = FALSE;
-    if (ftext && *ftext) {
-        char buf[64], *dash;
-        g_strlcpy(buf, ftext, sizeof buf);
-        dash = strchr(buf + 1, '-');
-        if (dash) *dash = '\0';
-        if (!parse_num(buf, &lo) || (dash && !parse_num(dash + 1, &hi)) || lo < 0 || lo > 255 ||
-            hi < 0 || hi > 255) {
-            gtk_label_set_text(state->io_note, "Filter: a port (3E) or a range (84-87)");
-            return;
-        }
-        if (!dash) hi = lo;
+    /* a port or lo-hi (and their mirrors), =port (that number only), or a name */
+    if (!pmd85portfilter_parse(state->dbg, ftext, &filter)) {
+        gtk_label_set_text(state->io_note, "Filter: a port (3E), a range (F4-F7), =86 for that number "
+                                           "only, or a name (SYS PIO)");
+        return;
     }
     count = pmd85debug_io_log(state->dbg, log, IOLOG_READ);
-    sig = ((uint64_t)count << 48) ^ (count ? log[0].tstates : 0) ^ (uint64_t)(lo << 8 | hi);
+    for (index = 0; index < 256; index++)
+        sig = (sig ^ filter.hit[index]) * 1099511628211ull;
+    sig ^= ((uint64_t)count << 48) ^ (count ? log[0].tstates : 0);
     if (!force && sig == state->io_sig) return;
     state->io_sig = sig;
     text = g_string_new(NULL);
     for (index = count - 1; index >= 0; index--) {
         const char *name;
         char port[16], value[16];
-        if (log[index].port < lo || log[index].port > hi) continue;
+        if (!filter.hit[log[index].port]) continue;
         name = pmd85debug_port_name(state->dbg, log[index].port);
         pmd85debug_format_hex(state->dbg, log[index].port, 2, port, sizeof port);
         pmd85debug_format_hex(state->dbg, log[index].value, 2, value, sizeof value);
@@ -1912,6 +1915,8 @@ static void on_bp_add(GtkWidget *wgt, gpointer user_data)
         gtk_label_set_text(state->bp_msg, "The end comes before the start");
         return;
     }
+    if ((type & PMD85DEBUG_BP_IO) && gtk_check_button_get_active(state->bp_exact))
+        type |= PMD85DEBUG_BP_EXACT;
     breakpoint_id = pmd85debug_breakpoint_add(state->dbg, type | (phys ? PMD85DEBUG_BP_PHYS : 0), (uint32_t)start,
                                   (uint32_t)finish, gtk_editable_get_text(GTK_EDITABLE(state->bp_cond)));
     if (breakpoint_id < 0) {
@@ -1925,6 +1930,14 @@ static void on_bp_add(GtkWidget *wgt, gpointer user_data)
     gtk_editable_set_text(GTK_EDITABLE(state->bp_end), "");
     gtk_editable_set_text(GTK_EDITABLE(state->bp_cond), "");
     refresh_now(state);
+}
+
+/* Exact applies to the port types only. */
+static void on_bp_type(GObject *object, GParamSpec *pspec, gpointer user_data)
+{
+    DbgWin *state = user_data;
+    (void)pspec;
+    gtk_widget_set_sensitive(GTK_WIDGET(state->bp_exact), gtk_drop_down_get_selected(GTK_DROP_DOWN(object)) >= 4);
 }
 
 /* "Break at": a symbol or a hex address, then Enter, sets an execute
@@ -2580,8 +2593,16 @@ static GtkWidget *build_breaks(DbgWin *state)
     gtk_widget_set_tooltip_text(GTK_WIDGET(state->bp_phys),
         "The range is a CoCo 3 physical RAM address (read, write and access only)");
     gtk_widget_set_visible(GTK_WIDGET(state->bp_phys), FALSE);   /* a CoCo 3 only */
+    state->bp_exact = GTK_CHECK_BUTTON(gtk_check_button_new_with_label("Exact"));
+    gtk_widget_set_tooltip_text(GTK_WIDGET(state->bp_exact),
+        "A port breakpoint on these port numbers only. Without it, it is on the register they "
+        "reach, at every mirror (the PMD's chips decode only some address bits: the system "
+        "PIO's port C is F6h, and 86h as BASIC writes it).");
+    gtk_widget_set_sensitive(GTK_WIDGET(state->bp_exact), FALSE);
+    g_signal_connect(state->bp_type, "notify::selected", G_CALLBACK(on_bp_type), state);
     gtk_box_append(GTK_BOX(row), GTK_WIDGET(state->bp_type));
     gtk_box_append(GTK_BOX(row), GTK_WIDGET(state->bp_phys));
+    gtk_box_append(GTK_BOX(row), GTK_WIDGET(state->bp_exact));
     gtk_box_append(GTK_BOX(row), GTK_WIDGET(state->bp_start));
     gtk_box_append(GTK_BOX(row), GTK_WIDGET(state->bp_end));
     gtk_box_append(GTK_BOX(row), GTK_WIDGET(state->bp_cond));
@@ -2595,7 +2616,8 @@ static GtkWidget *build_breaks(DbgWin *state)
                          "(a, hl, zf, [C000h]); `value`, `addr` (or `port`) and `old` are the "
                          "access. A read, write or port breakpoint stops right after the "
                          "instruction that made the access. A disabled execute breakpoint shows "
-                         "as a grey hollow dot.");
+                         "as a grey hollow dot. A port breakpoint stops at every mirror of its port "
+                         "(the I/O tab lists them) unless it is Exact.");
     gtk_widget_add_css_class(hint, "dim-label");
     gtk_label_set_xalign(GTK_LABEL(hint), 0);
     gtk_label_set_wrap(GTK_LABEL(hint), TRUE);
@@ -2664,7 +2686,10 @@ static GtkWidget *build_io(DbgWin *state)
                                 "Record every IN and OUT while the debugger is open");
     g_signal_connect(state->io_on, "toggled", G_CALLBACK(on_io_on), state);
     state->io_filter = GTK_ENTRY(gtk_entry_new());
-    gtk_entry_set_placeholder_text(state->io_filter, "port or lo-hi, e.g. 3E-3F");
+    gtk_entry_set_placeholder_text(state->io_filter, "port, lo-hi or name: F4-F7, =86, SYS PIO");
+    gtk_widget_set_tooltip_text(GTK_WIDGET(state->io_filter),
+        "A port or a range takes its mirrors too (the system PIO is F4-F7 and 84-87, A4-A7...); "
+        "=86 is that number only; a name takes every port of that chip or register");
     gtk_editable_set_width_chars(GTK_EDITABLE(state->io_filter), 14);
     g_signal_connect(state->io_filter, "changed", G_CALLBACK(on_io_filter), state);
     g_signal_connect(clear, "clicked", G_CALLBACK(on_io_clear), state);
