@@ -1,0 +1,107 @@
+name: macOS
+
+# Builds the native AppKit frontend (frontends/macos) with the core, the
+# FujiNet runtime and the test suite on GitHub's hosted macos-15 runner
+# (Apple Silicon, arm64), and uploads the app as a zip to try on a Mac.
+#
+# The app is built to run anywhere, not only here: SDL3 is linked statically
+# and OpenSSL (which FujiNet's libssh uses) too, and the bundle is checked for
+# Homebrew libraries before it is zipped. It is signed ad hoc only, so macOS
+# asks before its first launch (right-click > Open, or
+# `xattr -dr com.apple.quarantine "FujiNet Go PMD 85.app"`).
+#
+# The siblings in the FujiNetWIFI org build on the org's self-hosted Tahoe
+# runner instead (a universal arm64 + x86_64 bundle); moving there is a
+# change of runs-on and CMAKE_OSX_ARCHITECTURES.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      # cmake below 4: the vendored FujiNet subprojects (libssh, libsmb2,
+      # libnfs, mbedTLS) declare pre-3.5 minimums that cmake 4 rejects.
+      - name: Install build tools
+        run: |
+          python3 -m venv "$RUNNER_TEMP/tools"
+          "$RUNNER_TEMP/tools/bin/pip" install --quiet "cmake>=3.28,<4" ninja
+          echo "$RUNNER_TEMP/tools/bin" >> "$GITHUB_PATH"
+          brew list openssl@3 >/dev/null 2>&1 || brew install openssl@3
+          echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
+
+      # Some tools (the firmware's own) run the compiler directly, and the
+      # Xcode toolchain's clang only finds libc++ through an SDK path.
+      - name: Select the macOS SDK
+        run: echo "SDKROOT=$(xcrun --show-sdk-path)" >> "$GITHUB_ENV"
+
+      - name: Build and install static SDL3 (release-3.4.12, pinned)
+        run: |
+          git clone --depth 1 --branch release-3.4.12 \
+            https://github.com/libsdl-org/SDL.git "$RUNNER_TEMP/sdl3-src"
+          cmake -S "$RUNNER_TEMP/sdl3-src" -B "$RUNNER_TEMP/sdl3-build" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/sdl3-install" \
+            -DSDL_SHARED=OFF -DSDL_STATIC=ON -DSDL_TEST_LIBRARY=OFF
+          cmake --build "$RUNNER_TEMP/sdl3-build"
+          cmake --install "$RUNNER_TEMP/sdl3-build"
+
+      - name: Configure
+        env:
+          # Apple clang rejects libssh's -fstack-clash-protection, and the
+          # FujiNet firmware builds with -Werror.
+          CFLAGS: -Wno-error=unused-command-line-argument
+          CXXFLAGS: -Wno-error=unused-command-line-argument
+        run: cmake -B build -G Ninja -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/sdl3-install"
+
+      - name: Build
+        env:
+          CFLAGS: -Wno-error=unused-command-line-argument
+          CXXFLAGS: -Wno-error=unused-command-line-argument
+        run: cmake --build build
+
+      - name: Test
+        working-directory: build
+        run: ctest --output-on-failure
+
+      - name: Verify the bundle is self-contained
+        run: |
+          APP="build/frontends/macos/FujiNet Go PMD 85.app"
+          leaked=0
+          while IFS= read -r -d '' f; do
+            if file "$f" | grep -q "Mach-O"; then
+              if otool -L "$f" | tail -n +2 | grep -E "/opt/homebrew|/usr/local"; then
+                echo "--- $f"
+                otool -L "$f"
+                leaked=1
+              fi
+            fi
+          done < <(find "$APP" -type f -print0)
+          if [ "$leaked" -ne 0 ]; then
+            echo "::error::non-system library leaked into the app bundle"
+            exit 1
+          fi
+          test -f "$APP/Contents/Frameworks/libfujinet.dylib" \
+            || { echo "::error::libfujinet.dylib missing from the bundle"; exit 1; }
+
+      # ditto keeps the bundle's structure and executable bits, which a plain
+      # upload of the .app directory does not.
+      - name: Sign ad hoc and zip the app
+        run: |
+          APP="build/frontends/macos/FujiNet Go PMD 85.app"
+          codesign --force --sign - "$APP/Contents/Frameworks/libfujinet.dylib"
+          codesign --force --sign - "$APP"
+          codesign --verify --strict --verbose=2 "$APP"
+          ditto -c -k --keepParent "$APP" FujiNet-Go-PMD85-macos-arm64.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-app-arm64
+          path: FujiNet-Go-PMD85-macos-arm64.zip
+          if-no-files-found: error

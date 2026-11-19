@@ -1,0 +1,62 @@
+name: Linux
+
+# Builds the core, the FujiNet runtime, the GNOME frontend and runs the test
+# suite.
+#
+# An Arch container, not ubuntu-latest: the GNOME frontend needs GTK >= 4.16
+# (GdkMemoryTextureBuilder) and libadwaita >= 1.5, and ubuntu-24.04 ships GTK
+# 4.14. A frontend whose toolkit is too old is skipped by CMake, so on the old
+# image this job would go green having built no frontend.
+#
+# Tests that need what CI does not have skip (ctest's 77): pmd32 (a CP/M
+# disk), the TNFS part of fujinet_restart (a tnfsd).
+#
+# From fujinet-go-coco-desktop's linux.yml (GitHub-hosted runner).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    # SDL3 installs to a non-standard prefix (see below): every step that runs
+    # a linked binary needs the loader to find it there.
+    env:
+      LD_LIBRARY_PATH: /tmp/sdl3-install/lib
+    steps:
+      - name: Install build tools and frontend toolkits
+        run: |
+          pacman -Syu --noconfirm --needed \
+            base-devel cmake ninja python pkgconf git \
+            gtk4 libadwaita desktop-file-utils appstream \
+            libx11 libxext libxrandr libxi libxss libxcursor libxkbcommon \
+            wayland wayland-protocols libdrm mesa libpulse alsa-lib libxtst zlib \
+            openssl
+
+      - uses: actions/checkout@v4
+
+      # Pinned: the SDL3 the app is developed and tested against.
+      - name: Build and install SDL3 (release-3.4.12, pinned)
+        run: |
+          git clone --depth 1 --branch release-3.4.12 \
+            https://github.com/libsdl-org/SDL.git /tmp/sdl3-src
+          cmake -S /tmp/sdl3-src -B /tmp/sdl3-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/tmp/sdl3-install \
+            -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_TEST_LIBRARY=OFF
+          cmake --build /tmp/sdl3-build
+          cmake --install /tmp/sdl3-build
+
+      - name: Configure
+        run: cmake -B build -G Ninja -DCMAKE_PREFIX_PATH=/tmp/sdl3-install
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        working-directory: build
+        run: ctest --output-on-failure

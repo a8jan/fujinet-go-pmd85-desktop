@@ -138,11 +138,28 @@ Next
   drawn Controllers window. The flatpak manifest needs --device=all (or
   input) for /dev/input, as tools/dev-gnome.sh run now has.
 - Keyboard options apply by cold restart; make exchZY/numpad live.
-- K11 (F12 is the debugger key): offer it another way (on-screen key or a
-  binding).
-- macOS (AppKit) frontend; then KDE and Windows.
-- CI (linux, macos, windows, flatpak), flatpak manifests, metainfo,
-  screenshots, README, release.
+- F12 to the machine as K11 on every platform; the debugger moves to
+  Alt+F12 (GNOME, KDE, Windows; the menu item keeps it reachable). macOS:
+  to decide (Option+F12 or Cmd+F12, or a letter shortcut). Today
+  input_map.c drops F12 as reserved and the GNOME app opens the debugger
+  on it.
+- macOS function keys: F11 (K10, which FujiNet CONFIG boots with) is
+  often Mission Control's "Show Desktop", and F11/F12 are media keys
+  unless Fn is held or "Use F1, F2, etc. keys as standard function keys"
+  is on. Say so in the app (the Settings keyboard note has F11 already)
+  and in the README.
+- macOS (AppKit) frontend (frontends/macos, from the CoCo app's): the Metal
+  display (with the Sharp scaling in its shader), keyboard (modifiers as
+  the PMD's keys via flagsChanged; the app's keys are Command ones), Mouse
+  602, the menu bar (Model, ROM Module, PMD 32 Disks, Tape, Colors,
+  FujiNet), Settings, the Tape window, the console log. Built only on CI
+  (no Apple toolchain here); not yet tried by hand on a Mac.
+  Next: the debugger window, drag and drop of tapes/disks.
+- Then KDE and Windows.
+- CI: linux.yml (Arch container: GTK 4.16) and macos.yml (hosted macos-15,
+  arm64; static SDL3 and OpenSSL, ad-hoc signed .app zip as an artifact).
+  Later: windows, flatpak, a universal macOS build, release.
+- Flatpak manifests, metainfo, screenshots, README.
 - Upstream: tell the family's display-widget author (Thomas Cherryhomes,
   fujinet-go-coco/adam/apple2/atari800-desktop share frontends/gnome/
   display.c) about the sharp filter here: integer CPU prescale + linear

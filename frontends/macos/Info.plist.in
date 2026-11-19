@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key>
+  <string>FujiNet Go PMD 85</string>
+  <key>CFBundleDisplayName</key>
+  <string>FujiNet Go PMD 85</string>
+  <key>CFBundleIdentifier</key>
+  <string>online.fujinet.go.pmd85.macos</string>
+  <key>CFBundleExecutable</key>
+  <string>${MACOSX_BUNDLE_EXECUTABLE_NAME}</string>
+  <key>CFBundleIconFile</key>
+  <string>${MACOSX_BUNDLE_ICON_FILE}</string>
+  <key>CFBundleShortVersionString</key>
+  <string>${PROJECT_VERSION}</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+  <key>NSPrincipalClass</key>
+  <string>NSApplication</string>
+  <!-- The FujiNet web UI is plain HTTP on loopback. -->
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <key>NSAllowsLocalNetworking</key>
+    <true/>
+  </dict>
+  <!-- A game to the system: Game Mode (macOS 14+, when frontmost in full
+       screen) gives it CPU/GPU priority and lowers controller and audio
+       latency. -->
+  <key>LSSupportsGameMode</key>
+  <true/>
+  <key>GCSupportsGameMode</key>
+  <true/>
+  <key>NSSupportsAutomaticGraphicsSwitching</key>
+  <true/>
+  <key>LSApplicationCategoryType</key>
+  <string>public.app-category.games</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>13.3</string>
+</dict>
+</plist>
