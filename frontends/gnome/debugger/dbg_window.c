@@ -153,6 +153,7 @@ typedef struct {
     GtkCheckButton *io_on;
     GtkEntry *io_filter;
     GtkLabel *io_note;
+    uint64_t io_cap_sig;      /* the port set last given to the engine */
     gboolean io_sync;
     uint64_t io_sig;
 
@@ -717,7 +718,7 @@ static void append_pio(GString *text, const char *name, const pmd85debug_pio *pi
     if (!pio->valid) return;
     g_string_append_printf(text,
         "  %-8s CWR %02X   out PA %02X  PB %02X  PC %02X\n"
-        "  %-8s INTE %X    in  PA %02X  PB %02X  PC %02X\n",
+        "  %-8s INTE %X   in  PA %02X  PB %02X  PC %02X\n",
         name, pio->cwr, pio->a, pio->b, pio->c, "", pio->inte, pio->in_a, pio->in_b, pio->in_c);
 }
 
@@ -786,14 +787,16 @@ static void refresh_io(DbgWin *state)
     g_string_free(text, TRUE);
 }
 
-/* The newest accesses, oldest first; a port filter (a port or lo-hi) narrows
- * it. Rebuilt only when the log moved on. */
+/* The newest accesses, oldest first. The port filter is what the engine
+ * records from now on (so a quiet port is not pushed out by the keyboard
+ * scan), and what is shown of what it recorded before. Rebuilt only when the
+ * log moved on. */
 static void refresh_iolog(DbgWin *state, gboolean force)
 {
     static pmd85debug_io_access log[IOLOG_READ];
     static pmd85portfilter filter;
     const char *ftext = gtk_editable_get_text(GTK_EDITABLE(state->io_filter));
-    int count, index, shown = 0;
+    int count, index, shown = 0, all = 1;
     uint64_t sig = 1469598103934665603ull;
     GString *text;
     char note[160];
@@ -804,12 +807,18 @@ static void refresh_iolog(DbgWin *state, gboolean force)
     /* a port or lo-hi (and their mirrors), =port (that number only), or a name */
     if (!pmd85portfilter_parse(state->dbg, ftext, &filter)) {
         gtk_label_set_text(state->io_note, "Filter: a port (3E), a range (F4-F7), =86 for that number "
-                                           "only, or a name (SYS PIO)");
+                                           "only, or a name (SYS PIO). Until then it records as before.");
         return;
     }
-    count = pmd85debug_io_log(state->dbg, log, IOLOG_READ);
-    for (index = 0; index < 256; index++)
+    for (index = 0; index < 256; index++) {
         sig = (sig ^ filter.hit[index]) * 1099511628211ull;
+        all &= filter.hit[index];
+    }
+    if (sig != state->io_cap_sig) {
+        pmd85debug_io_log_set_ports(state->dbg, all ? NULL : filter.hit);
+        state->io_cap_sig = sig;
+    }
+    count = pmd85debug_io_log(state->dbg, log, IOLOG_READ);
     sig ^= ((uint64_t)count << 48) ^ (count ? log[0].tstates : 0);
     if (!force && sig == state->io_sig) return;
     state->io_sig = sig;
@@ -832,8 +841,12 @@ static void refresh_iolog(DbgWin *state, gboolean force)
                                   : "The I/O log is off.");
     set_text_at(state->io_log, text->str, TRUE);
     g_string_free(text, TRUE);
-    g_snprintf(note, sizeof note, "%d access%s (the newest %d kept)", shown, shown == 1 ? "" : "es",
-               IOLOG_READ);
+    if (all)
+        g_snprintf(note, sizeof note, "%d access%s (the newest %d kept)", shown,
+                   shown == 1 ? "" : "es", IOLOG_READ);
+    else
+        g_snprintf(note, sizeof note, "%d access%s (only these ports are recorded, the newest %d kept)",
+                   shown, shown == 1 ? "" : "es", IOLOG_READ);
     gtk_label_set_text(state->io_note, note);
 }
 
@@ -2689,19 +2702,23 @@ static GtkWidget *build_io(DbgWin *state)
     gtk_entry_set_placeholder_text(state->io_filter, "port, lo-hi or name: F4-F7, =86, SYS PIO");
     gtk_widget_set_tooltip_text(GTK_WIDGET(state->io_filter),
         "A port or a range takes its mirrors too (the system PIO is F4-F7 and 84-87, A4-A7...); "
-        "=86 is that number only; a name takes every port of that chip or register");
+        "=86 is that number only; a name takes every port of that chip or register. "
+        "Only these ports are recorded from then on.");
     gtk_editable_set_width_chars(GTK_EDITABLE(state->io_filter), 14);
     g_signal_connect(state->io_filter, "changed", G_CALLBACK(on_io_filter), state);
     g_signal_connect(clear, "clicked", G_CALLBACK(on_io_clear), state);
+    /* under the filter, wrapping: its text changes as one types, and it
+     * must not widen the window */
     state->io_note = GTK_LABEL(gtk_label_new(""));
     gtk_widget_add_css_class(GTK_WIDGET(state->io_note), "dim-label");
-    gtk_widget_set_hexpand(GTK_WIDGET(state->io_note), TRUE);
-    gtk_label_set_xalign(state->io_note, 1.0f);
+    gtk_label_set_wrap(state->io_note, TRUE);
+    gtk_label_set_wrap_mode(state->io_note, PANGO_WRAP_WORD_CHAR);
+    gtk_label_set_xalign(state->io_note, 0.0f);
     gtk_box_append(GTK_BOX(row), GTK_WIDGET(state->io_on));
     gtk_box_append(GTK_BOX(row), labeled("Ports", GTK_WIDGET(state->io_filter)));
     gtk_box_append(GTK_BOX(row), clear);
-    gtk_box_append(GTK_BOX(row), GTK_WIDGET(state->io_note));
     gtk_box_append(GTK_BOX(right), row);
+    gtk_box_append(GTK_BOX(right), GTK_WIDGET(state->io_note));
     gtk_box_append(GTK_BOX(right), mono_view(&state->io_log, FALSE));
     make_log(state->io_log);
     state->io_sig = ~(uint64_t)0;
@@ -2864,6 +2881,7 @@ static void on_destroy(GtkWidget *widget, gpointer user_data)
     state->closing = TRUE;
     if (state->timer) g_source_remove(state->timer);
     state->timer = 0;
+    pmd85debug_io_log_set_ports(state->dbg, NULL);    /* the filter goes with the window */
     pmd85debug_set_engaged(state->dbg, 0);
     if (g_win == state) g_win = NULL;
 }

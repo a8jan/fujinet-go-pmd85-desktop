@@ -257,7 +257,10 @@ int  pmd85debug_trace_match(const pmd85debug_trace_entry *e, int filter, uint16_
 
 /* ---- the I/O access log -------------------------------------------------
  * Every IN and OUT while engaged and the log is on (it is on by default),
- * newest first, a ring of 4096. */
+ * newest first, a ring of 4096. set_ports narrows what it records to the
+ * ports marked non-zero in ports[256] (a pmd85portfilter's hit), so a quiet
+ * port is not pushed out by a busy one; NULL records every port again.
+ * What is already in the log stays. */
 typedef struct {
     uint64_t tstates;
     uint16_t pc;
@@ -268,6 +271,7 @@ typedef struct {
 void pmd85debug_io_log_enable(pmd85debug *d, int on);
 int  pmd85debug_io_log_enabled(pmd85debug *d);
 int  pmd85debug_io_log(pmd85debug *d, pmd85debug_io_access *out, int max);
+void pmd85debug_io_log_set_ports(pmd85debug *d, const uint8_t *ports);
 void pmd85debug_io_log_clear(pmd85debug *d);
 /* "SYS PIO PC", "BECKER data", ... or NULL when nothing answers that port
  * on the machine as configured, as the engine last saw it (at an IN or OUT

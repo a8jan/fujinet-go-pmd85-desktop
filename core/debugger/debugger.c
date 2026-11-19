@@ -115,6 +115,7 @@ struct pmd85debug {
     int ring_head, ring_count;
     pmd85debug_io_access *iolog;
     int io_head, io_count;
+    uint8_t io_cap[256];      /* the ports the log records (1 each by default) */
 
     pmd85symtab *symtab;
     void *monsym_machine;     /* the machine the monitor symbols were picked for */
@@ -513,6 +514,10 @@ static void io_log(pmd85debug *d, uint16_t pc, uint8_t port, uint8_t value, int 
     e.value = value;
     e.out = (uint8_t)(out ? 1 : 0);
     pthread_mutex_lock(&d->ring_mtx);
+    if (!d->io_cap[port]) {
+        pthread_mutex_unlock(&d->ring_mtx);
+        return;
+    }
     if (!d->iolog)
         d->iolog = calloc(IOLOG_N, sizeof *d->iolog);
     if (d->iolog) {
@@ -885,6 +890,7 @@ pmd85debug *pmd85debug_create(pmd85session *s)
     d->n_io_devs = -1;
     memset(d->io_key, 0xFF, sizeof d->io_key);      /* -1: nothing answers */
     atomic_store(&d->io_log_on, 1);
+    memset(d->io_cap, 1, sizeof d->io_cap);
     {
         /* the display choices persist with the session's settings */
         int syn = pmd85session_get_int(s, "debugger_syntax", I8080_SYNTAX_INTEL);
@@ -1974,6 +1980,17 @@ int pmd85debug_io_log(pmd85debug *d, pmd85debug_io_access *out, int max)
     }
     pthread_mutex_unlock(&d->ring_mtx);
     return n;
+}
+
+void pmd85debug_io_log_set_ports(pmd85debug *d, const uint8_t *ports)
+{
+    int index;
+    if (!d)
+        return;
+    pthread_mutex_lock(&d->ring_mtx);
+    for (index = 0; index < 256; index++)
+        d->io_cap[index] = (uint8_t)(ports ? ports[index] != 0 : 1);
+    pthread_mutex_unlock(&d->ring_mtx);
 }
 
 void pmd85debug_io_log_clear(pmd85debug *d)

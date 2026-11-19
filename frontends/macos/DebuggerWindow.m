@@ -243,7 +243,7 @@ static void setButtonAccent(NSButton *button, BOOL active)
     NSTextView *_ioText, *_ioLog;
     NSButton *_ioOn;
     NSTextField *_ioFilter, *_ioNote;
-    uint64_t _ioSig;
+    uint64_t _ioSig, _ioCapSig;   /* the log shown; the port set given to the engine */
 
     /* Trace (0) and History (1) share one ring */
     NSButton *_hRec[2];
@@ -1141,19 +1141,21 @@ static NSString *stopLine(const pmd85debug_stop *stop, NSString *running)
     _ioOn.toolTip = @"Record every IN and OUT while the debugger is open";
     _ioFilter = [self field:@"F4-F7, =86, SYS PIO" width:170 action:@selector(ioFilterChanged:)];
     _ioFilter.toolTip = @"A port or a range takes its mirrors too (the system PIO is F4-F7 and 84-87, A4-A7...); "
-                        @"=86 is that number only; a name takes every port of that chip or register";
+                        @"=86 is that number only; a name takes every port of that chip or register. "
+                        @"Only these ports are recorded from then on.";
     _ioFilter.delegate = self;
+    /* under the filter: its text changes as one types */
     _ioNote = [self hint:@""];
     NSStackView *row = hstack(@[_ioOn, [self label:@"Ports"], _ioFilter,
-                                [self button:@"Clear" action:@selector(ioClear:)], _ioNote]);
-    row.distribution = NSStackViewDistributionFill;
+                                [self button:@"Clear" action:@selector(ioClear:)]]);
 
     NSStackView *left = vstack(@[[self heading:@"Machine, memory and chips"], chipsScroll]);
     left.distribution = NSStackViewDistributionFill;
     fill(left, chipsScroll);
-    NSStackView *right = vstack(@[[self heading:@"I/O log (T-state, PC, access, port name)"], row, logScroll]);
+    NSStackView *right = vstack(@[[self heading:@"I/O log (T-state, PC, access, port name)"], row, _ioNote,
+                                  logScroll]);
     right.distribution = NSStackViewDistributionFill;
-    fill(right, row);
+    fill(right, _ioNote);
     fill(right, logScroll);
 
     NSStackView *page = hstack(@[left, right]);
@@ -2493,7 +2495,7 @@ static void appendPio(NSMutableString *text, const char *name, const pmd85debug_
     if (!pio->valid)
         return;
     [text appendFormat:@"  %-8s CWR %02X   out PA %02X  PB %02X  PC %02X\n"
-                       @"  %-8s INTE %X    in  PA %02X  PB %02X  PC %02X\n",
+                       @"  %-8s INTE %X   in  PA %02X  PB %02X  PC %02X\n",
                        name, pio->cwr, pio->a, pio->b, pio->c, "", pio->inte, pio->in_a, pio->in_b, pio->in_c];
 }
 
@@ -2561,8 +2563,10 @@ static void appendPio(NSMutableString *text, const char *name, const pmd85debug_
     setText(_ioText, text, NO);
 }
 
-/* The newest accesses, oldest first; a port filter (a port or lo-hi) narrows
- * it. Rebuilt only when the log moved on. */
+/* The newest accesses, oldest first. The port filter is what the engine
+ * records from now on (so a quiet port is not pushed out by the keyboard
+ * scan), and what is shown of what it recorded before. Rebuilt only when the
+ * log moved on. */
 - (void)refreshIolog:(BOOL)force
 {
     static pmd85debug_io_access log[IOLOG_READ];
@@ -2572,15 +2576,23 @@ static void appendPio(NSMutableString *text, const char *name, const pmd85debug_
     /* a port or lo-hi (and their mirrors), =port (that number only), or a name */
     static pmd85portfilter filter;
     if (!pmd85portfilter_parse(_dbg, _ioFilter.stringValue.UTF8String, &filter)) {
-        _ioNote.stringValue = @"Filter: a port (3E), a range (F4-F7), =86 for that number only, or a name (SYS PIO)";
+        _ioNote.stringValue = @"Filter: a port (3E), a range (F4-F7), =86 for that number only, or a name "
+                              @"(SYS PIO). Until then it records as before.";
         return;
+    }
+    uint64_t sig = 1469598103934665603ull;
+    int all = 1;
+    for (int port = 0; port < 256; port++) {
+        sig = (sig ^ filter.hit[port]) * 1099511628211ull;
+        all &= filter.hit[port];
+    }
+    if (sig != _ioCapSig) {
+        pmd85debug_io_log_set_ports(_dbg, all ? NULL : filter.hit);
+        _ioCapSig = sig;
     }
     int count = pmd85debug_io_log(_dbg, log, IOLOG_READ);
     if (count < 0)
         count = 0;
-    uint64_t sig = 1469598103934665603ull;
-    for (int port = 0; port < 256; port++)
-        sig = (sig ^ filter.hit[port]) * 1099511628211ull;
     sig ^= ((uint64_t)count << 48) ^ (count ? log[0].tstates : 0);
     if (!force && sig == _ioSig)
         return;
@@ -2603,8 +2615,13 @@ static void appendPio(NSMutableString *text, const char *name, const pmd85debug_
         [text appendString:pmd85debug_io_log_enabled(_dbg) ? @"(nothing yet: it records while the debugger is open)"
                                                           : @"The I/O log is off."];
     setText(_ioLog, text, YES);
-    _ioNote.stringValue = [NSString stringWithFormat:@"%d access%s (the newest %d kept)", shown,
-                                                     shown == 1 ? "" : "es", IOLOG_READ];
+    if (all)
+        _ioNote.stringValue = [NSString stringWithFormat:@"%d access%s (the newest %d kept)", shown,
+                                                         shown == 1 ? "" : "es", IOLOG_READ];
+    else
+        _ioNote.stringValue = [NSString stringWithFormat:@"%d access%s (only these ports are recorded, "
+                                                         @"the newest %d kept)",
+                                                         shown, shown == 1 ? "" : "es", IOLOG_READ];
 }
 
 /* The symbol table, filtered: "C000h  name", ordered as the engine filters

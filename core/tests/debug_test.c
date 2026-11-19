@@ -361,6 +361,24 @@ int main(void)
                                           io[1].out == 1 && io[1].value == 0x41);
     }
     pmd85debug_trace_enable(d, 0);
+    {
+        /* a capture filter without port 20h (the program's OUT and IN):
+         * nothing more is recorded, and what is in the log already stays */
+        uint8_t ports[256];
+        pmd85debug_io_access io[4];
+        int n;
+        memset(ports, 1, sizeof ports);
+        ports[0x20] = 0;
+        pmd85debug_io_log_set_ports(d, ports);
+        restart_prog(d);
+        was = pmd85debug_stop_serial(d);
+        pmd85debug_run_to(d, 0x010A);
+        ok("run through the program again", wait_stop(d, was));
+        n = pmd85debug_io_log(d, io, 4);
+        ok("I/O log with a port set: 20h not recorded, the old two kept",
+           n == 2 && io[0].pc == 0x0108 && io[1].value == 0x41);
+        pmd85debug_io_log_set_ports(d, NULL);
+    }
 
     /* ---- the chips ---- */
     {
