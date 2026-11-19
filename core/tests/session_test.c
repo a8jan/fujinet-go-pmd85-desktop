@@ -24,6 +24,17 @@ static void sleep_ms(int ms)
     nanosleep(&ts, NULL);
 }
 
+/* Waits for `frames` more frames of machine time (50 a second), at most
+ * 15 s: a shared CI host can stall the emulator thread, and the pacer drops
+ * the frames lost rather than race, so a wall-clock wait can come up short
+ * of what the machine has to have run by then. */
+static void run_machine(pmd85session *s, uint64_t frames)
+{
+    const uint64_t until = pmd85session_frame_count(s) + frames;
+    for (int waited = 0; pmd85session_frame_count(s) < until && waited < 15000; waited += 20)
+        sleep_ms(20);
+}
+
 static uint32_t fb[PMD85SESSION_FB_MAX_WIDTH * PMD85SESSION_FB_MAX_HEIGHT];
 
 static int lit_now(pmd85session *s)
@@ -80,6 +91,8 @@ int main(void)
     if (dropped)
         fprintf(stderr, "note: %llu frames dropped after host stalls\n",
                 (unsigned long long)dropped);
+    if (frames < 175)
+        run_machine(s, 175 - frames);  /* 3.5 s of machine time, whatever was dropped */
     int lit = lit_now(s);
     CHECK(lit > 1500, "FujiNet CONFIG not on screen (%d lit)", lit);
     CHECK(pmd85session_mega_page(s) == 0, "mega page %d", pmd85session_mega_page(s));
@@ -87,7 +100,7 @@ int main(void)
     /* live: to the bare monitor of an 85-3 */
     pmd85session_set_module(s, PMD85SESSION_MODULE_NONE);
     pmd85session_set_model(s, PMD85SESSION_MODEL_3);
-    sleep_ms(2500);
+    run_machine(s, 125);
     CHECK(pmd85session_model(s) == PMD85SESSION_MODEL_3, "model");
     CHECK(pmd85session_mega_page(s) == -1, "a MegaModule survived module=None");
     lit = lit_now(s);
@@ -115,11 +128,11 @@ int main(void)
         CHECK(pmd85session_set_module_file(s, rmm) == 0, "rmm: %s", pmd85session_last_error(s));
         CHECK(pmd85session_module(s) == PMD85SESSION_MODULE_FILE, "module not FILE");
         CHECK(pmd85session_module_file_ok(s), "module file not ok");
-        sleep_ms(1500);
+        run_machine(s, 75);
         CHECK(pmd85session_mega_page(s) == -1, "a .rmm went into a MegaModule");
 
         CHECK(pmd85session_set_module_file(s, mrm) == 0, "mrm: %s", pmd85session_last_error(s));
-        sleep_ms(3500);
+        run_machine(s, 175);
         CHECK(pmd85session_mega_page(s) == 0, "a .mrm not in a MegaModule (%d)",
               pmd85session_mega_page(s));
         CHECK(pmd85session_mega_size(s) > 0 && pmd85session_mega_size(s) <= 32 * 1024,
