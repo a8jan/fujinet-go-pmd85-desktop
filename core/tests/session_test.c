@@ -115,7 +115,7 @@ int main(void)
         snprintf(rmm, sizeof rmm, "%s/basic2A.rmm", pmd85session_roms_path(s));
         snprintf(mrm, sizeof mrm, "%s/loader-copy.mrm", dir);
         snprintf(empty, sizeof empty, "%s/empty.rmm", dir);
-        snprintf(probe, sizeof probe, "%s/fujinet-config-loader.rmm",
+        snprintf(probe, sizeof probe, "%s/fujinet-config.rmm",
                  pmd85session_roms_path(s));
         in = fopen(probe, "rb");
         out = fopen(mrm, "wb");

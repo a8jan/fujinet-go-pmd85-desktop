@@ -31,10 +31,10 @@ user's ROM folder on first start (a user's own file of the same name wins):
   holder who objects should open an issue and the image will be removed from
   the embedded set (the machine then reads a user-supplied copy from the ROM
   folder).
-- **`fujinet-config-loader.rmm`**: the FujiNet CONFIG loader module,
-  https://github.com/a8jan/fujinet-config-loader-pmd85 (MIT, Jan Krupa),
-  carrying FujiNet's `fujinet-config` (GPL-3.0). Provenance and checksum in
-  `tools/gpmd85/roms/README.md`.
+- **`fujinet-config.rmm`**: FujiNet's `fujinet-config` (GPL-3.0) as a ROM
+  module, behind the loader from
+  https://github.com/a8jan/fujinet-config-loader-pmd85 (MIT, Jan Krupa).
+  Provenance and checksum in `tools/gpmd85/roms/README.md`.
 
 ## Monitor symbols
 

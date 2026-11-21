@@ -67,7 +67,7 @@ file(GLOB PMD85_EMBED_IMAGES
   "${GP}/rom/*.rom"
   "${GP}/rom/*.rmm")
 list(APPEND PMD85_EMBED_IMAGES
-  "${CMAKE_SOURCE_DIR}/tools/gpmd85/roms/fujinet-config-loader.rmm")
+  "${CMAKE_SOURCE_DIR}/tools/gpmd85/roms/fujinet-config.rmm")
 set(PMD85_ROMS_C "${CMAKE_CURRENT_BINARY_DIR}/roms_embedded.c")
 add_custom_command(
   OUTPUT "${PMD85_ROMS_C}"

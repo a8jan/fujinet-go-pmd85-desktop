@@ -91,7 +91,7 @@ static const struct {
     /* C2717 */ { "c2717.rom",   { NULL } },
 };
 
-#define FUJINET_LOADER_RMM "fujinet-config-loader.rmm"
+#define FUJINET_CONFIG_RMM "fujinet-config.rmm"
 
 static const char *table_at(const char *const *tab, int idx)
 {
@@ -225,7 +225,7 @@ static void build_config(pmd85session *s, pmd85host_config *c)
     switch (module) {
     case PMD85SESSION_MODULE_FUJINET:
         c->rom_module = PMD85_ROMMOD_MEGA;
-        rom_path(s, c->mrm, FUJINET_LOADER_RMM);
+        rom_path(s, c->mrm, FUJINET_CONFIG_RMM);
         break;
     case PMD85SESSION_MODULE_BASIC:
         c->rom_module = PMD85_ROMMOD_PACK;

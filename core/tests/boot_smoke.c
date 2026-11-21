@@ -147,7 +147,7 @@ int main(void)
     pmd85host_config_defaults(&c);
     rom(c.monitor, "monit2A.rom");
     c.rom_module = PMD85_ROMMOD_MEGA;
-    rom(c.mrm, "fujinet-config-loader.rmm");
+    rom(c.mrm, "fujinet-config.rmm");
     run(&c, 200);
     CHECK(lit() > 1500, "2A + FujiNet loader: CONFIG did not come up (%d lit)", lit());
     CHECK(pmd85host_mega_page() == 0, "MegaModule page %d", pmd85host_mega_page());
@@ -175,7 +175,7 @@ int main(void)
     c.model = PMD85_MODEL_2;
     rom(c.monitor, "monit2.rom");
     c.rom_module = PMD85_ROMMOD_MEGA;
-    rom(c.mrm, "fujinet-config-loader.rmm");
+    rom(c.mrm, "fujinet-config.rmm");
     run(&c, 300);
     CHECK(lit() > 1500, "85-2 + FujiNet loader: CONFIG did not come up "
           "(%d lit)", lit());

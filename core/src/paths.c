@@ -186,10 +186,11 @@ static int copy_tree(const char *src, const char *dst)
     return rc;
 }
 
-/* Images this app shipped before under the same name: a file still exactly
- * one of these was never touched by the user, so the current one replaces
- * it. When a bundled image changes, add the old one here (its size and its
- * 64-bit FNV-1a). */
+/* Images this app shipped before: a file still exactly one of these was
+ * never touched by the user, so the current image of that name replaces it,
+ * or, under a name no longer shipped, it is removed. When a bundled image
+ * changes or is renamed, add the old one here (its size and its 64-bit
+ * FNV-1a). */
 static const struct {
     const char *name;
     long size;
@@ -197,6 +198,10 @@ static const struct {
 } superseded_roms[] = {
     /* fujinet-config-loader-pmd85 4d403ba, 2024 CONFIG */
     { "fujinet-config-loader.rmm", 28644, 0x3d20101376f47b98ull },
+    /* the loader's progress bar work, CONFIG from pmd85-keyboard (be99dd5+) */
+    { "fujinet-config-loader.rmm", 28481, 0xb434dcff69e6fc8cull },
+    /* the same, CONFIG from pmd85-keyboard f07e9a0 (now fujinet-config.rmm) */
+    { "fujinet-config-loader.rmm", 28505, 0x0c34f49e489537c9ull },
 };
 
 static uint64_t fnv1a_file(const char *path, long *size)
@@ -266,6 +271,16 @@ void paths_materialise_roms(pmd85session *s)
             continue;
         }
         fclose(f);
+    }
+    /* an untouched image under a name this app no longer ships */
+    for (i = 0; i < (int)(sizeof superseded_roms / sizeof superseded_roms[0]); i++) {
+        const char *name = superseded_roms[i].name;
+        int shipped = 0, j;
+        for (j = 0; j < pmd85_embedded_rom_count && !shipped; j++)
+            shipped = !strcmp(pmd85_embedded_roms[j].name, name);
+        snprintf(dst, sizeof(dst), "%s/%s", s->roms_dir, name);
+        if (!shipped && path_is_file(dst) && is_superseded(name, dst))
+            remove(dst);
     }
 }
 
