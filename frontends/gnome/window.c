@@ -31,6 +31,9 @@
 #include "fujilog.h"
 #include "tape.h"
 
+/* X11 and Wayland keycodes are the evdev code + 8: all of a keyboard's fit */
+#define KEYCODES_TRACKED 512
+
 struct _Pmd85Window {
     AdwApplicationWindow parent_instance;
 
@@ -47,6 +50,16 @@ struct _Pmd85Window {
     int last_rom_loads;
     unsigned pad_event;   /* the last gamepad connect/disconnect toasted */
     guint hot_key;        /* an Alt hotkey that went down: its release stays here */
+    /* What each physical key held down was given to the machine as, so its
+     * release lets go of that same key. GDK translates a release with the
+     * modifiers held then: with Shift down, Alt_L is Meta_L (xkb's pc
+     * symbols), so Shift and Alt let go in another order than they went
+     * down left Alt or Meta held in the machine -- which blanks the whole
+     * PMD keyboard (upstream reserves them for its hotkeys). */
+    struct {
+        guint keyval;
+        gboolean ctrl, shift, held;
+    } held[KEYCODES_TRACKED];
 };
 
 G_DEFINE_FINAL_TYPE(Pmd85Window, pmd85_window, ADW_TYPE_APPLICATION_WINDOW)
@@ -404,10 +417,12 @@ static gboolean hotkey(Pmd85Window *self, guint k, GdkModifierType state)
     return FALSE;
 }
 
-static gboolean window_key(Pmd85Window *self, guint keyval,
+static gboolean window_key(Pmd85Window *self, guint keyval, guint keycode,
                            GdkModifierType state, gboolean down)
 {
     const guint k = gdk_keyval_to_lower(keyval);
+    gboolean ctrl = (state & GDK_CONTROL_MASK) != 0;
+    gboolean shift = (state & GDK_SHIFT_MASK) != 0;
 
     if (self->hot_key && k == self->hot_key) {
         /* its auto-repeat and its release */
@@ -420,11 +435,36 @@ static gboolean window_key(Pmd85Window *self, guint keyval,
         return TRUE;
     }
 
-    pmd85session_key(self->session, down ? 1 : 0, keyval,
-                     gdk_keyval_to_unicode(keyval),
-                     (state & GDK_CONTROL_MASK) != 0,
-                     (state & GDK_SHIFT_MASK) != 0);
+    if (keycode < KEYCODES_TRACKED) {
+        if (down) {
+            if (self->held[keycode].held && self->held[keycode].keyval != keyval)
+                /* the same key again as another symbol (a modifier changed
+                 * while it repeats): the first one goes */
+                pmd85session_key(self->session, 0, self->held[keycode].keyval,
+                                 gdk_keyval_to_unicode(self->held[keycode].keyval),
+                                 self->held[keycode].ctrl, self->held[keycode].shift);
+            self->held[keycode].keyval = keyval;
+            self->held[keycode].ctrl = ctrl;
+            self->held[keycode].shift = shift;
+            self->held[keycode].held = TRUE;
+        } else if (self->held[keycode].held) {
+            /* its release is the key it went down as */
+            keyval = self->held[keycode].keyval;
+            ctrl = self->held[keycode].ctrl;
+            shift = self->held[keycode].shift;
+            self->held[keycode].held = FALSE;
+        }
+    }
+    pmd85session_key(self->session, down ? 1 : 0, keyval, gdk_keyval_to_unicode(keyval), ctrl,
+                     shift);
     return TRUE;
+}
+
+/* Every key let go: the machine's (the session's own list) and ours. */
+static void release_all_keys(Pmd85Window *self)
+{
+    memset(self->held, 0, sizeof self->held);
+    pmd85session_release_all(self->session);
 }
 
 static gboolean on_key_pressed(GtkEventControllerKey *controller, guint keyval,
@@ -432,8 +472,7 @@ static gboolean on_key_pressed(GtkEventControllerKey *controller, guint keyval,
                                gpointer user_data)
 {
     (void)controller;
-    (void)keycode;
-    return window_key(PMD85_WINDOW(user_data), keyval, state, TRUE);
+    return window_key(PMD85_WINDOW(user_data), keyval, keycode, state, TRUE);
 }
 
 static void on_key_released(GtkEventControllerKey *controller, guint keyval,
@@ -441,8 +480,7 @@ static void on_key_released(GtkEventControllerKey *controller, guint keyval,
                             gpointer user_data)
 {
     (void)controller;
-    (void)keycode;
-    window_key(PMD85_WINDOW(user_data), keyval, state, FALSE);
+    window_key(PMD85_WINDOW(user_data), keyval, keycode, state, FALSE);
 }
 
 /* Focus leaving the window with keys held would leave the machine believing
@@ -451,7 +489,7 @@ static void on_focus_leave(GtkEventControllerFocus *controller,
                            gpointer user_data)
 {
     (void)controller;
-    pmd85session_release_all(PMD85_WINDOW(user_data)->session);
+    release_all_keys(PMD85_WINDOW(user_data));
 }
 
 static void on_active_changed(GObject *object, GParamSpec *pspec,
@@ -459,7 +497,7 @@ static void on_active_changed(GObject *object, GParamSpec *pspec,
 {
     (void)pspec;
     if (!gtk_window_is_active(GTK_WINDOW(object)))
-        pmd85session_release_all(PMD85_WINDOW(user_data)->session);
+        release_all_keys(PMD85_WINDOW(user_data));
 }
 
 /* ---- actions ------------------------------------------------------------ */
