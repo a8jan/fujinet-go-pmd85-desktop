@@ -1,6 +1,6 @@
 [Desktop Entry]
 Type=Application
-Name=FujiNet Go PMD 85
+Name=FujiNet Go PMD 85 (GNOME)
 GenericName=Tesla PMD 85 Emulator
 Comment=Self-contained Tesla PMD 85 with built-in FujiNet
 Exec=fujinet-go-pmd85-gnome

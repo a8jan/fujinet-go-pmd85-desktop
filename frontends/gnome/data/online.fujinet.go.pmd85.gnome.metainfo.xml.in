@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>online.fujinet.go.pmd85.gnome</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>FujiNet Go PMD 85 (GNOME)</name>
+  <summary>The Tesla PMD 85 computers with a built-in FujiNet</summary>
+  <description>
+    <p>
+      The Tesla PMD 85 with a FujiNet plugged in: the machine boots into
+      FujiNet CONFIG, browses network hosts and a local SD folder, and loads
+      ROM modules from them straight into the MegaModule, all in one
+      application.
+    </p>
+    <p>
+      The emulator is GPMD85Emulator. The PMD 85-1, 85-2, 85-2A and 85-3, Mato,
+      Didaktik Alfa and Alfa 2 and Consul 2717 are there, with the MIF 85 music
+      interface, the PMD 32 disk drive, the Mouse 602 and the 4004/482
+      joysticks. FujiNet runs inside the application and talks to the PMD over
+      DriveWire on a Becker port.
+    </p>
+    <p>
+      The monitors and BASIC come with the emulator. Tapes load and save with
+      a tape browser, gamepads are picked up as they are plugged in and out,
+      and a native debugger shows the 8080, disassembly with breakpoints on
+      memory and I/O ports, the chips, the I/O log and every DriveWire packet.
+    </p>
+  </description>
+  <launchable type="desktop-id">online.fujinet.go.pmd85.gnome.desktop</launchable>
+  <icon type="stock">online.fujinet.go.pmd85.gnome</icon>
+  <!-- Software centres classify from these, not from the .desktop
+       Categories= line; without them the app lands in no section at all. -->
+  <categories>
+    <category>Game</category>
+    <category>Emulator</category>
+  </categories>
+  <url type="homepage">https://fujinet.online/</url>
+  <url type="bugtracker">https://github.com/a8jan/fujinet-go-pmd85-desktop/issues</url>
+  <developer id="online.fujinet">
+    <name>FujiNet</name>
+  </developer>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <!-- The CURRENT release templates its version from @PROJECT_VERSION@, so
+         it cannot disagree with the tree; past releases are literal. The
+         release job checks that this first entry is still a template. -->
+    <release version="@PROJECT_VERSION@" date="2026-11-21">
+      <description>
+        <p>
+          First release: GPMD85Emulator with an in-process FujiNet over
+          DriveWire, every PMD 85 model, the PMD 32, MIF 85, Mouse 602 and
+          joysticks, a tape browser, native GNOME and macOS frontends and a
+          native debugger.
+        </p>
+      </description>
+    </release>
+  </releases>
+</component>

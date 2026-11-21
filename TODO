@@ -155,6 +155,27 @@ Next
   The debugger window (Option+F12 or View > Debugger, Cmd+D): the GNOME
   one's ten tabs in the CoCo macOS window's shape; built only on CI so far.
   Next: drag and drop of tapes/disks.
+- (done) Debugger and the PMD's mirrored I/O decode: the emulator's port
+  decode is one table (pmd85host_port_devs), read by the port names and the
+  debugger. A port breakpoint stops at every mirror of the register it
+  reaches ("exact" / the Exact checkbox: that number only); the I/O log
+  filter takes a port or range (with mirrors), =port, or a chip/register
+  name, and is a capture filter (pmd85debug_io_log_set_ports: only those
+  ports are recorded, so the keyboard scan does not push a rare one out);
+  the I/O tab and the console's "ports" show the decode table. Port names
+  show while running too. Its hint sits under the filter (no window resize
+  while typing).
+- (done) FujiNet CONFIG is fujinet-config.rmm (was fujinet-config-loader.rmm):
+  FujiNetWIFI/fujinet-config 968d482 behind fujinet-config-loader-pmd85
+  c294cd9 (logo and progress bar). A bundled ROM still exactly as an earlier
+  version shipped it is updated (or, under a retired name, removed) at the
+  next start; superseded_roms in core/src/paths.c lists them, a file the
+  user changed is never touched. Provenance in tools/gpmd85/roms/README.md.
+- (done) GNOME: a key's release lets go of what its press was (by keycode).
+  With Shift held Alt_L is Meta_L, so Shift+Alt+F5 could leave Alt or Meta
+  held in the machine, and GPMD85 blanks the PMD keyboard while either is.
+- (done) The session test waits for machine time (frames), not wall time:
+  a stalled CI host drops frames.
 - Then KDE and Windows.
 - CI: linux.yml (Arch container: GTK 4.16) and macos.yml (hosted macos-15,
   arm64; static SDL3 and OpenSSL, ad-hoc signed .app zip as an artifact).

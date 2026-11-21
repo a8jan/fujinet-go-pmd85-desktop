@@ -35,7 +35,10 @@ target_compile_definitions(fujinet-go-pmd85-gnome PRIVATE
 install(TARGETS fujinet-go-pmd85-gnome RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(FILES data/${GNOME_APP_ID}.desktop
         DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
-install(FILES data/${GNOME_APP_ID}.metainfo.xml
+# The current release's version comes from project() VERSION.
+configure_file(data/${GNOME_APP_ID}.metainfo.xml.in
+               ${CMAKE_CURRENT_BINARY_DIR}/${GNOME_APP_ID}.metainfo.xml @ONLY)
+install(FILES ${CMAKE_CURRENT_BINARY_DIR}/${GNOME_APP_ID}.metainfo.xml
         DESTINATION ${CMAKE_INSTALL_DATADIR}/metainfo)
 
 # Catch a malformed launcher at build time rather than after installing.
@@ -49,5 +52,5 @@ find_program(APPSTREAMCLI appstreamcli)
 if(APPSTREAMCLI)
   add_test(NAME metainfo_gnome
            COMMAND ${APPSTREAMCLI} validate --no-net --pedantic
-                   "${CMAKE_CURRENT_SOURCE_DIR}/data/${GNOME_APP_ID}.metainfo.xml")
+                   "${CMAKE_CURRENT_BINARY_DIR}/${GNOME_APP_ID}.metainfo.xml")
 endif()
